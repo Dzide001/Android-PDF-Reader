@@ -9,6 +9,7 @@ VARIANT="Debug"
 APPLICATION_ID="com.pdfreader"
 LAUNCH_ACTIVITY="com.pdfreader.MainActivity"
 VARIANT_LOWER="debug"
+DEVICE_SERIAL=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -28,9 +29,13 @@ while [[ $# -gt 0 ]]; do
       LAUNCH_ACTIVITY="$2"
       shift 2
       ;;
+    --serial)
+      DEVICE_SERIAL="$2"
+      shift 2
+      ;;
     *)
       echo "Unknown argument: $1"
-      echo "Usage: $0 [--build-only] [--variant Debug] [--application-id com.pdfreader] [--activity com.pdfreader.MainActivity]"
+      echo "Usage: $0 [--build-only] [--variant Debug] [--application-id com.pdfreader] [--activity com.pdfreader.MainActivity] [--serial DEVICE_ID]"
       exit 1
       ;;
   esac
@@ -63,6 +68,11 @@ if [[ -n "${ANDROID_SDK_ROOT:-}" && -x "${ANDROID_SDK_ROOT}/platform-tools/adb" 
   ADB_BIN="${ANDROID_SDK_ROOT}/platform-tools/adb"
 elif [[ -n "${ANDROID_HOME:-}" && -x "${ANDROID_HOME}/platform-tools/adb" ]]; then
   ADB_BIN="${ANDROID_HOME}/platform-tools/adb"
+elif [[ -f "local.properties" ]]; then
+  SDK_DIR="$(grep '^sdk.dir=' local.properties | head -n 1 | cut -d'=' -f2- | sed 's#\\:#:#g')"
+  if [[ -n "${SDK_DIR:-}" && -x "${SDK_DIR}/platform-tools/adb" ]]; then
+    ADB_BIN="${SDK_DIR}/platform-tools/adb"
+  fi
 elif command -v adb >/dev/null 2>&1; then
   ADB_BIN="$(command -v adb)"
 fi
@@ -80,10 +90,18 @@ if [[ "$DEVICE_COUNT" -eq 0 ]]; then
   exit 1
 fi
 
+if [[ -z "$DEVICE_SERIAL" ]]; then
+  DEVICE_SERIAL="$($ADB_BIN devices | awk 'NR>1 && /device$/{print $1; exit}')"
+  if [[ "$DEVICE_COUNT" -gt 1 ]]; then
+    echo "Multiple devices detected. Using first online device: $DEVICE_SERIAL"
+    echo "Tip: pass --serial <deviceId> to choose a specific device."
+  fi
+fi
+
 echo "==> Installing APK: $APK_PATH"
-"$ADB_BIN" install -r "$APK_PATH"
+"$ADB_BIN" -s "$DEVICE_SERIAL" install -r "$APK_PATH"
 
 echo "==> Launching app"
-"$ADB_BIN" shell am start -n "${APPLICATION_ID}/${LAUNCH_ACTIVITY}" >/dev/null
+"$ADB_BIN" -s "$DEVICE_SERIAL" shell am start -n "${APPLICATION_ID}/${LAUNCH_ACTIVITY}" >/dev/null
 
-echo "App launched: ${APPLICATION_ID}/${LAUNCH_ACTIVITY}"
+echo "App launched on ${DEVICE_SERIAL}: ${APPLICATION_ID}/${LAUNCH_ACTIVITY}"
