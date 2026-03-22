@@ -6,9 +6,6 @@ project(mupdf_engine)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find required packages
-find_package(JNI REQUIRED)
-
 # Add MuPDF library (external)
 # Note: MuPDF should be built separately and linked
 # This is a placeholder for the JNI wrapper
@@ -21,7 +18,6 @@ set(SOURCES
 
 # Include directories
 include_directories(
-    ${JNI_INCLUDE_DIRS}
     src/main/cpp/include
 )
 
@@ -30,7 +26,8 @@ add_library(mupdf_engine SHARED ${SOURCES})
 
 # Link JNI and MuPDF libraries
 target_link_libraries(mupdf_engine
-    ${JNI_LIBRARIES}
+    log
+    android
     # MuPDF library will be linked here
     # mupdf
 )

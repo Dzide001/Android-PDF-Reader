@@ -16,6 +16,8 @@ local.properties
 /native/build
 /native/mupdf/build
 /native/tesseract/build
+/.cxx
+**/.cxx
 *.so
 *.o
 

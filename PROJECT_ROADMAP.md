@@ -592,8 +592,8 @@ data class TextBox(val rect: Rect, val text: String)
 ## 15. Milestone Tracking
 
 ### Phase A Milestones
-- [ ] **MA.1** - Basic PDF loading and single page render
-- [ ] **MA.2** - Page navigation (swipe, page buttons)
+- [x] **MA.1** - Basic PDF loading and single page render
+- [x] **MA.2** - Page navigation (swipe, page buttons)
 - [ ] **MA.3** - Zoom and scroll functionality
 - [ ] **MA.4** - Text selection and copy to clipboard
 - [ ] **MA.5** - Basic highlight annotation

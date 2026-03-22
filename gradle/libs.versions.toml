@@ -1,7 +1,7 @@
 [versions]
 # Build tools
 android-gradle-plugin = "8.2.0"
-kotlin = "1.9.20"
+kotlin = "1.9.22"
 kotlin-coroutines = "1.7.3"
 
 # Android API levels
@@ -12,6 +12,7 @@ android-min-api = "26"
 androidx-activity = "1.8.1"
 androidx-appcompat = "1.6.1"
 androidx-compose-runtime = "1.6.0"
+androidx-compose-compiler = "1.5.8"
 androidx-compose-material3 = "1.1.2"
 androidx-lifecycle = "2.6.2"
 androidx-room = "2.6.1"
@@ -63,3 +64,4 @@ android-application = { id = "com.android.application", version.ref = "android-g
 android-library = { id = "com.android.library", version.ref = "android-gradle-plugin" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-kapt = { id = "org.jetbrains.kotlin.kapt", version.ref = "kotlin" }

@@ -49,7 +49,7 @@ android {
     }
 
     composeOptions {
-        kotlinCompilerExtensionVersion = libs.versions.androidx.compose.runtime.get()
+        kotlinCompilerExtensionVersion = libs.versions.androidx.compose.compiler.get()
     }
 
     packaging {
@@ -73,8 +73,6 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.lifecycle.viewmodel)
     implementation(libs.androidx.lifecycle.runtime)
-    implementation(libs.androidx.room.runtime)
-    implementation(libs.androidx.room.ktx)
     implementation(libs.androidx.workmanager)
     implementation(libs.androidx.navigation.compose)
 
@@ -83,10 +81,6 @@ dependencies {
     implementation(project(":core:renderer"))
     implementation(project(":core:annotations"))
     implementation(project(":core:storage"))
-
-    // Room annotation processor
-    annotationProcessor(libs.androidx.room.compiler)
-    kapt(libs.androidx.room.compiler)
 
     // Testing
     testImplementation(libs.junit)
