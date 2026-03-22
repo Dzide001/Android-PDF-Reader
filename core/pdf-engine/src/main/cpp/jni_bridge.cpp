@@ -42,7 +42,7 @@ JNIEXPORT jlong JNICALL Java_com_pdfreader_core_pdfengine_MuPdfEngine_nativeOpen
  * Close a PDF document
  */
 JNIEXPORT jint JNICALL Java_com_pdfreader_core_pdfengine_MuPdfEngine_nativeCloseDocument(JNIEnv* env, jobject obj, jlong docHandle) {
-    LOGI("Closing document handle: %lld", docHandle);
+    LOGI("Closing document handle: %ld", static_cast<long>(docHandle));
     
     // TODO: Implement MuPDF document closing
     // fz_drop_document(ctx, doc);
@@ -54,7 +54,7 @@ JNIEXPORT jint JNICALL Java_com_pdfreader_core_pdfengine_MuPdfEngine_nativeClose
  * Get page count
  */
 JNIEXPORT jint JNICALL Java_com_pdfreader_core_pdfengine_MuPdfEngine_nativeGetPageCount(JNIEnv* env, jobject obj, jlong docHandle) {
-    LOGI("Getting page count for document: %lld", docHandle);
+    LOGI("Getting page count for document: %ld", static_cast<long>(docHandle));
     
     // TODO: Implement MuPDF page count retrieval
     // int pages = fz_count_pages(ctx, doc);
