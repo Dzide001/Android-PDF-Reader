@@ -34,3 +34,6 @@ coverage.xml
 # Environment
 .env.local
 .env
+
+# Backups
+/backups
