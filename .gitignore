@@ -1,0 +1,34 @@
+.gradle
+.idea
+*.log
+*.iml
+local.properties
+
+# Build outputs
+/build
+/app/build
+/core/*/build
+*.apk
+*.aab
+*.aar
+
+# Native build artifacts
+/native/build
+/native/mupdf/build
+/native/tesseract/build
+*.so
+*.o
+
+# IDE
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Test outputs
+/test-outputs
+coverage.xml
+
+# Environment
+.env.local
+.env
