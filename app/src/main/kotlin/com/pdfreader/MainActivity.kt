@@ -1,7 +1,7 @@
 package com.pdfreader
 
 import android.graphics.Bitmap
-import android.graphics.Color
+import android.graphics.Color as AndroidColor
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Bundle
@@ -11,8 +11,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
@@ -45,18 +47,31 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.layout.onSizeChanged
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
+
+private data class HighlightRegion(
+    val leftFrac: Float,
+    val topFrac: Float,
+    val rightFrac: Float,
+    val bottomFrac: Float
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -94,6 +109,11 @@ private fun PdfReaderScreen() {
     var selectedPageText by remember { mutableStateOf("") }
     var showTextDialog by remember { mutableStateOf(false) }
     var isExtractingText by remember { mutableStateOf(false) }
+    var isHighlightMode by remember { mutableStateOf(false) }
+    var highlightsByPage by remember { mutableStateOf<Map<Int, List<HighlightRegion>>>(emptyMap()) }
+    var dragStart by remember { mutableStateOf<Offset?>(null) }
+    var dragCurrent by remember { mutableStateOf<Offset?>(null) }
+    var viewerSize by remember { mutableStateOf(IntSize.Zero) }
     var zoom by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
@@ -201,6 +221,22 @@ private fun PdfReaderScreen() {
                 ) {
                     Text(if (isExtractingText) "Extracting..." else "Text")
                 }
+                Button(
+                    onClick = { isHighlightMode = !isHighlightMode },
+                    enabled = pdfSession != null
+                ) {
+                    Text(if (isHighlightMode) "Highlight ON" else "Highlight")
+                }
+                Button(
+                    onClick = {
+                        highlightsByPage = highlightsByPage.toMutableMap().apply {
+                            remove(currentPage)
+                        }
+                    },
+                    enabled = (highlightsByPage[currentPage]?.isNotEmpty() == true)
+                ) {
+                    Text("Clear")
+                }
             }
 
             Text(
@@ -210,6 +246,13 @@ private fun PdfReaderScreen() {
                     "Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
                 }
             )
+
+            if (isHighlightMode) {
+                Text(
+                    text = "Highlight mode: drag on page to mark areas",
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
 
             if (errorMessage != null) {
                 Text(text = errorMessage!!, color = MaterialTheme.colorScheme.error)
@@ -226,20 +269,98 @@ private fun PdfReaderScreen() {
                 if (bitmap == null) {
                     Text("Open a PDF to begin")
                 } else {
-                    Image(
-                        bitmap = bitmap.asImageBitmap(),
-                        contentDescription = "Rendered PDF page",
-                        contentScale = ContentScale.Fit,
+                    Box(
                         modifier = Modifier
                             .fillMaxSize()
+                            .onSizeChanged { viewerSize = it }
                             .graphicsLayer {
                                 scaleX = zoom
                                 scaleY = zoom
                                 translationX = offsetX
                                 translationY = offsetY
                             }
-                            .transformable(transformState)
-                    )
+                            .transformable(state = transformState, enabled = !isHighlightMode)
+                            .pointerInput(isHighlightMode, currentPage, viewerSize) {
+                                if (!isHighlightMode) return@pointerInput
+                                detectDragGestures(
+                                    onDragStart = { offset ->
+                                        dragStart = offset
+                                        dragCurrent = offset
+                                    },
+                                    onDragEnd = {
+                                        val start = dragStart
+                                        val end = dragCurrent
+                                        val width = viewerSize.width.toFloat()
+                                        val height = viewerSize.height.toFloat()
+
+                                        if (start != null && end != null && width > 0f && height > 0f) {
+                                            val left = minOf(start.x, end.x).coerceIn(0f, width)
+                                            val top = minOf(start.y, end.y).coerceIn(0f, height)
+                                            val right = maxOf(start.x, end.x).coerceIn(0f, width)
+                                            val bottom = maxOf(start.y, end.y).coerceIn(0f, height)
+
+                                            if ((right - left) > 8f && (bottom - top) > 8f) {
+                                                val region = HighlightRegion(
+                                                    leftFrac = left / width,
+                                                    topFrac = top / height,
+                                                    rightFrac = right / width,
+                                                    bottomFrac = bottom / height
+                                                )
+                                                val pageRegions = highlightsByPage[currentPage].orEmpty()
+                                                highlightsByPage = highlightsByPage.toMutableMap().apply {
+                                                    put(currentPage, pageRegions + region)
+                                                }
+                                            }
+                                        }
+                                        dragStart = null
+                                        dragCurrent = null
+                                    },
+                                    onDragCancel = {
+                                        dragStart = null
+                                        dragCurrent = null
+                                    },
+                                    onDrag = { change, _ ->
+                                        dragCurrent = change.position
+                                        change.consume()
+                                    }
+                                )
+                            }
+                    ) {
+                        Image(
+                            bitmap = bitmap.asImageBitmap(),
+                            contentDescription = "Rendered PDF page",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize()
+                        )
+
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            highlightsByPage[currentPage].orEmpty().forEach { region ->
+                                val left = region.leftFrac * size.width
+                                val top = region.topFrac * size.height
+                                val width = (region.rightFrac - region.leftFrac) * size.width
+                                val height = (region.bottomFrac - region.topFrac) * size.height
+                                drawRect(
+                                    color = ComposeColor.Yellow.copy(alpha = 0.35f),
+                                    topLeft = Offset(left, top),
+                                    size = Size(width, height)
+                                )
+                            }
+
+                            val start = dragStart
+                            val end = dragCurrent
+                            if (start != null && end != null) {
+                                val left = minOf(start.x, end.x)
+                                val top = minOf(start.y, end.y)
+                                val width = kotlin.math.abs(end.x - start.x)
+                                val height = kotlin.math.abs(end.y - start.y)
+                                drawRect(
+                                    color = ComposeColor(0xFFFFC107).copy(alpha = 0.25f),
+                                    topLeft = Offset(left, top),
+                                    size = Size(width, height)
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -282,7 +403,7 @@ private suspend fun renderPageBitmap(renderer: PdfRenderer, pageIndex: Int): Bit
             val width = (page.width * 2).coerceAtLeast(1)
             val height = (page.height * 2).coerceAtLeast(1)
             val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            bitmap.eraseColor(Color.WHITE)
+            bitmap.eraseColor(AndroidColor.WHITE)
             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
             bitmap
         }
