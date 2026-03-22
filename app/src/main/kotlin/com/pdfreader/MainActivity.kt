@@ -10,6 +10,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.rememberTransformableState
@@ -21,12 +22,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -35,16 +40,23 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.text.PDFTextStripper
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -71,11 +83,17 @@ private class PdfSession(
 @OptIn(ExperimentalMaterial3Api::class)
 private fun PdfReaderScreen() {
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
 
     var pdfSession by remember { mutableStateOf<PdfSession?>(null) }
+    var currentPdfUri by remember { mutableStateOf<Uri?>(null) }
     var currentPage by remember { mutableIntStateOf(0) }
     var pageBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var selectedPageText by remember { mutableStateOf("") }
+    var showTextDialog by remember { mutableStateOf(false) }
+    var isExtractingText by remember { mutableStateOf(false) }
     var zoom by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
@@ -110,6 +128,7 @@ private fun PdfReaderScreen() {
             }
 
             pdfSession = PdfSession(pfd, renderer)
+            currentPdfUri = uri
         } catch (e: Exception) {
             errorMessage = e.message ?: "Failed to open PDF"
         }
@@ -162,6 +181,26 @@ private fun PdfReaderScreen() {
                 ) {
                     Text("Next")
                 }
+                Button(
+                    onClick = {
+                        val uri = currentPdfUri ?: return@Button
+                        isExtractingText = true
+                        errorMessage = null
+                        scope.launch {
+                            try {
+                                selectedPageText = extractPageText(context, uri, currentPage)
+                                showTextDialog = true
+                            } catch (e: Exception) {
+                                errorMessage = e.message ?: "Failed to extract page text"
+                            } finally {
+                                isExtractingText = false
+                            }
+                        }
+                    },
+                    enabled = pdfSession != null && !isExtractingText
+                ) {
+                    Text(if (isExtractingText) "Extracting..." else "Text")
+                }
             }
 
             Text(
@@ -205,6 +244,36 @@ private fun PdfReaderScreen() {
             }
         }
     }
+
+    if (showTextDialog) {
+        AlertDialog(
+            onDismissRequest = { showTextDialog = false },
+            title = { Text("Page Text") },
+            text = {
+                SelectionContainer {
+                    Text(
+                        text = selectedPageText.ifBlank {
+                            "No extractable text found on this page. This may be a scanned/image-only page."
+                        },
+                        modifier = Modifier.verticalScroll(rememberScrollState())
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    clipboardManager.setText(AnnotatedString(selectedPageText))
+                    showTextDialog = false
+                }) {
+                    Text("Copy")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTextDialog = false }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
 }
 
 private suspend fun renderPageBitmap(renderer: PdfRenderer, pageIndex: Int): Bitmap =
@@ -217,4 +286,19 @@ private suspend fun renderPageBitmap(renderer: PdfRenderer, pageIndex: Int): Bit
             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
             bitmap
         }
+    }
+
+private suspend fun extractPageText(context: android.content.Context, uri: Uri, pageIndex: Int): String =
+    withContext(Dispatchers.IO) {
+        PDFBoxResourceLoader.init(context.applicationContext)
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            PDDocument.load(stream).use { document ->
+                val stripper = PDFTextStripper().apply {
+                    startPage = pageIndex + 1
+                    endPage = pageIndex + 1
+                    sortByPosition = true
+                }
+                stripper.getText(document).trim()
+            }
+        } ?: ""
     }

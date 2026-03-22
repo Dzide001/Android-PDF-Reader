@@ -75,6 +75,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime)
     implementation(libs.androidx.workmanager)
     implementation(libs.androidx.navigation.compose)
+    implementation(libs.pdfbox.android)
 
     // Core feature modules
     implementation(project(":core:pdf-engine"))
