@@ -6,6 +6,9 @@ import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.provider.OpenableColumns
+import org.json.JSONArray
+import org.json.JSONObject
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -24,8 +27,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -49,6 +55,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -71,6 +78,15 @@ private data class HighlightRegion(
     val topFrac: Float,
     val rightFrac: Float,
     val bottomFrac: Float
+)
+
+private data class RecentDocument(
+    val id: String,
+    val displayName: String,
+    val uri: String,
+    val pageCount: Int,
+    val lastOpenedAt: Long,
+    val isFavorite: Boolean
 )
 
 class MainActivity : ComponentActivity() {
@@ -103,6 +119,7 @@ private fun PdfReaderScreen() {
 
     var pdfSession by remember { mutableStateOf<PdfSession?>(null) }
     var currentPdfUri by remember { mutableStateOf<Uri?>(null) }
+    var recentDocuments by remember { mutableStateOf(loadRecentDocuments(context)) }
     var currentPage by remember { mutableIntStateOf(0) }
     var pageBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -129,6 +146,15 @@ private fun PdfReaderScreen() {
         if (uri == null) return@rememberLauncherForActivityResult
 
         try {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        } catch (_: SecurityException) {
+            // Some providers do not support persisted permissions.
+        }
+
+        try {
             pdfSession?.close()
             pageBitmap?.recycle()
             currentPage = 0
@@ -149,6 +175,14 @@ private fun PdfReaderScreen() {
 
             pdfSession = PdfSession(pfd, renderer)
             currentPdfUri = uri
+
+            recentDocuments = upsertRecentDocument(
+                existing = recentDocuments,
+                uri = uri,
+                displayName = resolveDisplayName(context, uri),
+                pageCount = renderer.pageCount
+            )
+            saveRecentDocuments(context, recentDocuments)
         } catch (e: Exception) {
             errorMessage = e.message ?: "Failed to open PDF"
         }
@@ -182,6 +216,73 @@ private fun PdfReaderScreen() {
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            if (recentDocuments.isNotEmpty()) {
+                Text("Recent PDFs", style = MaterialTheme.typography.titleMedium)
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 180.dp)
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    items(recentDocuments) { doc ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = doc.displayName,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        openDocumentFromUriString(
+                                            context = context,
+                                            uriString = doc.uri,
+                                            onOpened = { session, uri ->
+                                                pdfSession?.close()
+                                                pageBitmap?.recycle()
+                                                currentPage = 0
+                                                pdfSession = session
+                                                currentPdfUri = uri
+                                                errorMessage = null
+
+                                                recentDocuments = upsertRecentDocument(
+                                                    existing = recentDocuments,
+                                                    uri = uri,
+                                                    displayName = doc.displayName,
+                                                    pageCount = session.renderer.pageCount,
+                                                    keepFavorite = doc.isFavorite
+                                                )
+                                                saveRecentDocuments(context, recentDocuments)
+                                            },
+                                            onError = { msg -> errorMessage = msg }
+                                        )
+                                    }
+                                }
+                            ) {
+                                Text("Open")
+                            }
+                            Button(
+                                onClick = {
+                                    recentDocuments = recentDocuments.map {
+                                        if (it.id == doc.id) it.copy(isFavorite = !it.isFavorite) else it
+                                    }
+                                    saveRecentDocuments(context, recentDocuments)
+                                }
+                            ) {
+                                Text(if (doc.isFavorite) "★" else "☆")
+                            }
+                        }
+                    }
+                }
+            }
+
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { openDocumentLauncher.launch(arrayOf("application/pdf")) }) {
                     Text("Open PDF")
@@ -423,3 +524,107 @@ private suspend fun extractPageText(context: android.content.Context, uri: Uri, 
             }
         } ?: ""
     }
+
+private suspend fun openDocumentFromUriString(
+    context: android.content.Context,
+    uriString: String,
+    onOpened: (PdfSession, Uri) -> Unit,
+    onError: (String) -> Unit
+) {
+    withContext(Dispatchers.IO) {
+        try {
+            val uri = Uri.parse(uriString)
+            val pfd = context.contentResolver.openFileDescriptor(uri, "r")
+            if (pfd == null) {
+                withContext(Dispatchers.Main) { onError("Unable to open selected file.") }
+                return@withContext
+            }
+            val renderer = PdfRenderer(pfd)
+            if (renderer.pageCount == 0) {
+                renderer.close()
+                pfd.close()
+                withContext(Dispatchers.Main) { onError("PDF has no pages.") }
+                return@withContext
+            }
+            withContext(Dispatchers.Main) {
+                onOpened(PdfSession(pfd, renderer), uri)
+            }
+        } catch (e: Exception) {
+            withContext(Dispatchers.Main) {
+                onError(e.message ?: "Failed to open PDF")
+            }
+        }
+    }
+}
+
+private fun resolveDisplayName(context: android.content.Context, uri: Uri): String {
+    val cursor = context.contentResolver.query(uri, null, null, null, null)
+    cursor?.use {
+        val nameIndex = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (nameIndex != -1 && it.moveToFirst()) {
+            return it.getString(nameIndex)
+        }
+    }
+    return uri.lastPathSegment ?: uri.toString()
+}
+
+private fun loadRecentDocuments(context: android.content.Context): List<RecentDocument> {
+    val prefs = context.getSharedPreferences("pdf_reader_prefs", android.content.Context.MODE_PRIVATE)
+    val raw = prefs.getString("recent_documents_json", null) ?: return emptyList()
+    return try {
+        val jsonArray = JSONArray(raw)
+        buildList {
+            for (i in 0 until jsonArray.length()) {
+                val obj = jsonArray.getJSONObject(i)
+                add(
+                    RecentDocument(
+                        id = obj.optString("id"),
+                        displayName = obj.optString("displayName"),
+                        uri = obj.optString("uri"),
+                        pageCount = obj.optInt("pageCount"),
+                        lastOpenedAt = obj.optLong("lastOpenedAt"),
+                        isFavorite = obj.optBoolean("isFavorite")
+                    )
+                )
+            }
+        }
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+private fun saveRecentDocuments(context: android.content.Context, docs: List<RecentDocument>) {
+    val array = JSONArray()
+    docs.take(20).forEach { doc ->
+        val obj = JSONObject()
+            .put("id", doc.id)
+            .put("displayName", doc.displayName)
+            .put("uri", doc.uri)
+            .put("pageCount", doc.pageCount)
+            .put("lastOpenedAt", doc.lastOpenedAt)
+            .put("isFavorite", doc.isFavorite)
+        array.put(obj)
+    }
+    val prefs = context.getSharedPreferences("pdf_reader_prefs", android.content.Context.MODE_PRIVATE)
+    prefs.edit().putString("recent_documents_json", array.toString()).apply()
+}
+
+private fun upsertRecentDocument(
+    existing: List<RecentDocument>,
+    uri: Uri,
+    displayName: String,
+    pageCount: Int,
+    keepFavorite: Boolean = false
+): List<RecentDocument> {
+    val id = uri.toString()
+    val previous = existing.firstOrNull { it.id == id }
+    val updated = RecentDocument(
+        id = id,
+        displayName = displayName,
+        uri = id,
+        pageCount = pageCount,
+        lastOpenedAt = System.currentTimeMillis(),
+        isFavorite = keepFavorite || (previous?.isFavorite == true)
+    )
+    return listOf(updated) + existing.filterNot { it.id == id }
+}

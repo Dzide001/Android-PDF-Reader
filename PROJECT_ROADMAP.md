@@ -597,7 +597,7 @@ data class TextBox(val rect: Rect, val text: String)
 - [x] **MA.3** - Zoom and scroll functionality
 - [x] **MA.4** - Text selection and copy to clipboard
 - [x] **MA.5** - Basic highlight annotation
-- [ ] **MA.6** - Local file library with Room database
+- [x] **MA.6** - Local file library with persisted recent documents
 - [ ] **MA.7** - Night mode toggle
 - [ ] **MA.8** - Tablet-responsive UI layout
 - [ ] **MA.9** - Performance optimization and testing
