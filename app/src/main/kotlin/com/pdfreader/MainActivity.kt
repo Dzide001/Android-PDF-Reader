@@ -241,7 +241,6 @@ private fun PdfReaderScreen() {
     var isEraserMode by remember { mutableStateOf(false) }
     var isStylusActive by remember { mutableStateOf(false) }
     var isPalmRejectionEnabled by remember { mutableStateOf(true) }
-    var lastStylusEventTimeMs by remember { mutableStateOf(0L) }
     var isShapeMode by remember { mutableStateOf(false) }
     var selectedShapeType by remember { mutableStateOf(ShapeType.RECTANGLE) }
     var shapesByPage by remember { mutableStateOf<Map<Int, List<ShapeAnnotation>>>(emptyMap()) }
@@ -615,7 +614,7 @@ private fun PdfReaderScreen() {
             Button(
                 onClick = { isEraserMode = !isEraserMode },
                 enabled = pdfSession != null && isDrawingMode && !isContinuousMode
-            ) { Text(if (isEraserMode) "⌫✓" else "⌫") }
+            ) { Text(if (isEraserMode) "🧽✓" else "🧽") }
 
             Button(
                 onClick = {
@@ -767,7 +766,8 @@ private fun PdfReaderScreen() {
                         }
                         .transformable(
                             state = transformState,
-                            enabled = !isHighlightMode && !isDrawingMode && !isShapeMode && !isTextSelectionMode
+                            enabled = !isHighlightMode && !isShapeMode && !isTextSelectionMode &&
+                                (!isDrawingMode || isPalmRejectionEnabled)
                         )
                         .pointerInput(isHighlightMode, isDrawingMode, isShapeMode, isTextSelectionMode, zoom) {
                             if (isHighlightMode || isDrawingMode || isShapeMode || isTextSelectionMode || zoom > 1.05f) return@pointerInput
@@ -1035,6 +1035,21 @@ private fun PdfReaderScreen() {
                             drawShapeAnnotation(preview)
                         }
 
+                        if (isDrawingMode && !isEraserMode && currentStrokePoints.isNotEmpty()) {
+                            val previewPath = buildSmoothComposePath(currentStrokePoints)
+                            if (!previewPath.isEmpty) {
+                                drawPath(
+                                    path = previewPath,
+                                    color = ComposeColor(drawingColor),
+                                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                        width = currentStrokePoints.lastOrNull()?.size ?: 4f,
+                                        cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                                        join = androidx.compose.ui.graphics.StrokeJoin.Round
+                                    )
+                                )
+                            }
+                        }
+
                         if (isTextSelectionMode) {
                             val boxes = textBoxesByPage[currentPage].orEmpty()
                             val range = selectedTextRange
@@ -1124,16 +1139,40 @@ private fun PdfReaderScreen() {
                     if (!isDrawingMode) return@pointerInteropFilter false
 
                     val stylusIndex = findStylusPointerIndex(event)
-                    val nowMs = event.eventTime
-                    if (stylusIndex != -1) {
-                        lastStylusEventTimeMs = nowMs
+                    val shouldPassToViewer = isPalmRejectionEnabled && stylusIndex == -1
+                    if (shouldPassToViewer) {
+                        return@pointerInteropFilter false
                     }
 
-                    val stylusRecentlyActive = (nowMs - lastStylusEventTimeMs) <= 1500L
                     val activePointerIndex = when {
                         stylusIndex != -1 -> stylusIndex
-                        isPalmRejectionEnabled && (isStylusActive || stylusRecentlyActive) -> -1
                         else -> event.actionIndex.coerceIn(0, event.pointerCount - 1)
+                    }
+
+                    fun eraseAt(pointerIndex: Int, historyIndex: Int? = null) {
+                        val rawX = if (historyIndex == null) event.getX(pointerIndex) else event.getHistoricalX(pointerIndex, historyIndex)
+                        val rawY = if (historyIndex == null) event.getY(pointerIndex) else event.getHistoricalY(pointerIndex, historyIndex)
+                        val docPoint = mapViewPointToDocument(
+                            point = Offset(rawX, rawY),
+                            zoom = zoom,
+                            offsetX = offsetX,
+                            offsetY = offsetY,
+                            viewport = viewerSize
+                        )
+
+                        strokesByPage = strokesByPage.toMutableMap().apply {
+                            val remaining = getOrDefault(currentPage, emptyList()).filterNot { stroke ->
+                                isStrokeHit(stroke, docPoint, thresholdPx = 22f)
+                            }
+                            put(currentPage, remaining)
+                        }
+
+                        shapesByPage = shapesByPage.toMutableMap().apply {
+                            val remaining = getOrDefault(currentPage, emptyList()).filterNot { shape ->
+                                isShapeHit(shape, docPoint, viewerSize, thresholdPx = 24f)
+                            }
+                            put(currentPage, remaining)
+                        }
                     }
 
                     when (event.actionMasked) {
@@ -1141,25 +1180,46 @@ private fun PdfReaderScreen() {
                         MotionEvent.ACTION_POINTER_DOWN -> {
                             if (stylusIndex != -1) {
                                 isStylusActive = true
-                                lastStylusEventTimeMs = nowMs
                             }
-                            if (activePointerIndex == -1) return@pointerInteropFilter true
-
-                            currentStrokePoints = listOf(
-                                strokePointFromMotionEvent(event, activePointerIndex, isEraserMode)
-                            )
+                            if (isEraserMode) {
+                                eraseAt(activePointerIndex)
+                                currentStrokePoints = emptyList()
+                            } else {
+                                currentStrokePoints = listOf(
+                                    strokePointFromMotionEvent(
+                                        event = event,
+                                        pointerIndex = activePointerIndex,
+                                        isEraser = false,
+                                        zoom = zoom,
+                                        offsetX = offsetX,
+                                        offsetY = offsetY,
+                                        viewport = viewerSize
+                                    )
+                                )
+                            }
                         }
 
                         MotionEvent.ACTION_MOVE -> {
-                            if (activePointerIndex == -1) return@pointerInteropFilter true
+                            if (isEraserMode) {
+                                val historySize = event.historySize
+                                for (h in 0 until historySize) {
+                                    eraseAt(activePointerIndex, h)
+                                }
+                                eraseAt(activePointerIndex)
+                                return@pointerInteropFilter true
+                            }
 
                             val historySize = event.historySize
                             for (h in 0 until historySize) {
                                 val historical = strokePointFromMotionEvent(
                                     event = event,
                                     pointerIndex = activePointerIndex,
-                                    isEraser = isEraserMode,
-                                    historyIndex = h
+                                    isEraser = false,
+                                    historyIndex = h,
+                                    zoom = zoom,
+                                    offsetX = offsetX,
+                                    offsetY = offsetY,
+                                    viewport = viewerSize
                                 )
                                 appendStrokePoint(
                                     existing = currentStrokePoints,
@@ -1168,7 +1228,15 @@ private fun PdfReaderScreen() {
                                 )?.let { currentStrokePoints = it }
                             }
 
-                            val current = strokePointFromMotionEvent(event, activePointerIndex, isEraserMode)
+                            val current = strokePointFromMotionEvent(
+                                event = event,
+                                pointerIndex = activePointerIndex,
+                                isEraser = false,
+                                zoom = zoom,
+                                offsetX = offsetX,
+                                offsetY = offsetY,
+                                viewport = viewerSize
+                            )
                             appendStrokePoint(
                                 existing = currentStrokePoints,
                                 next = current,
@@ -1191,8 +1259,8 @@ private fun PdfReaderScreen() {
                             if (currentStrokePoints.isNotEmpty()) {
                                 val stroke = Stroke(
                                     points = currentStrokePoints,
-                                    color = if (isEraserMode) 0 else drawingColor,
-                                    isErasing = isEraserMode,
+                                    color = drawingColor,
+                                    isErasing = false,
                                     pageIndex = currentPage
                                 )
                                 strokesByPage = strokesByPage.toMutableMap().apply {
@@ -1206,23 +1274,7 @@ private fun PdfReaderScreen() {
 
                     true
                 }
-        ) {
-            // Render current stroke being drawn
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val previewPath = buildSmoothComposePath(currentStrokePoints)
-                if (!previewPath.isEmpty) {
-                    drawPath(
-                        path = previewPath,
-                        color = if (isEraserMode) ComposeColor.White.copy(alpha = 0.35f) else ComposeColor(drawingColor),
-                        style = androidx.compose.ui.graphics.drawscope.Stroke(
-                            width = currentStrokePoints.lastOrNull()?.size ?: 4f,
-                            cap = androidx.compose.ui.graphics.StrokeCap.Round,
-                            join = androidx.compose.ui.graphics.StrokeJoin.Round
-                        )
-                    )
-                }
-            }
-        }
+        )
     }
 
     @Composable
@@ -1935,18 +1987,31 @@ private fun strokePointFromMotionEvent(
     event: MotionEvent,
     pointerIndex: Int,
     isEraser: Boolean,
-    historyIndex: Int? = null
+    historyIndex: Int? = null,
+    zoom: Float,
+    offsetX: Float,
+    offsetY: Float,
+    viewport: IntSize
 ): StrokePoint {
-    val x = if (historyIndex == null) {
+    val rawX = if (historyIndex == null) {
         event.getX(pointerIndex)
     } else {
         event.getHistoricalX(pointerIndex, historyIndex)
     }
-    val y = if (historyIndex == null) {
+    val rawY = if (historyIndex == null) {
         event.getY(pointerIndex)
     } else {
         event.getHistoricalY(pointerIndex, historyIndex)
     }
+
+    val mapped = mapViewPointToDocument(
+        point = Offset(rawX, rawY),
+        zoom = zoom,
+        offsetX = offsetX,
+        offsetY = offsetY,
+        viewport = viewport
+    )
+
     val pressure = if (historyIndex == null) {
         event.getPressure(pointerIndex)
     } else {
@@ -1954,11 +2019,55 @@ private fun strokePointFromMotionEvent(
     }.coerceIn(0f, 1f)
 
     return StrokePoint(
-        x = x,
-        y = y,
+        x = mapped.x,
+        y = mapped.y,
         pressure = pressure,
         size = calculateStrokeWidth(pressure, isEraser)
     )
+}
+
+private fun mapViewPointToDocument(
+    point: Offset,
+    zoom: Float,
+    offsetX: Float,
+    offsetY: Float,
+    viewport: IntSize
+): Offset {
+    if (zoom <= 0f || viewport.width <= 0 || viewport.height <= 0) return point
+
+    val cx = viewport.width / 2f
+    val cy = viewport.height / 2f
+    val mappedX = ((point.x - cx - offsetX) / zoom) + cx
+    val mappedY = ((point.y - cy - offsetY) / zoom) + cy
+    return Offset(mappedX, mappedY)
+}
+
+private fun isStrokeHit(stroke: Stroke, docPoint: Offset, thresholdPx: Float): Boolean {
+    if (stroke.points.isEmpty()) return false
+    val t = thresholdPx * thresholdPx
+    for (i in 0 until stroke.points.size) {
+        val p = stroke.points[i]
+        val dx = p.x - docPoint.x
+        val dy = p.y - docPoint.y
+        if ((dx * dx) + (dy * dy) <= t) return true
+    }
+    return false
+}
+
+private fun isShapeHit(shape: ShapeAnnotation, docPoint: Offset, viewport: IntSize, thresholdPx: Float): Boolean {
+    val width = viewport.width.toFloat().coerceAtLeast(1f)
+    val height = viewport.height.toFloat().coerceAtLeast(1f)
+    val left = shape.leftFrac * width
+    val top = shape.topFrac * height
+    val right = shape.rightFrac * width
+    val bottom = shape.bottomFrac * height
+
+    val expandedLeft = left - thresholdPx
+    val expandedTop = top - thresholdPx
+    val expandedRight = right + thresholdPx
+    val expandedBottom = bottom + thresholdPx
+
+    return docPoint.x in expandedLeft..expandedRight && docPoint.y in expandedTop..expandedBottom
 }
 
 private fun findNearestTextIndex(
