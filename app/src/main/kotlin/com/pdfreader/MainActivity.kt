@@ -265,26 +265,39 @@ private fun PdfReaderScreen() {
     var draggingOrganizerIndex by remember { mutableIntStateOf(-1) }
     var organizerDragDy by remember { mutableFloatStateOf(0f) }
 
+    val sessionPageCount = pdfSession?.renderer?.pageCount ?: 0
+    val effectivePageOrder = if (pageOrder.isNotEmpty()) pageOrder else (0 until sessionPageCount).toList()
+    val currentOrderPosition = effectivePageOrder.indexOf(currentPage).let { idx ->
+        if (idx >= 0) idx else 0
+    }
+    val hasPreviousPage = effectivePageOrder.isNotEmpty() && currentOrderPosition > 0
+    val hasNextPage = effectivePageOrder.isNotEmpty() && currentOrderPosition < effectivePageOrder.lastIndex
+    val pageIndicatorText = if (pdfSession == null) {
+        "No document selected"
+    } else {
+        val visibleIndex = if (effectivePageOrder.isEmpty()) 0 else (currentOrderPosition + 1)
+        val visibleTotal = effectivePageOrder.size
+        if (isContinuousMode) {
+            "Continuous • Page $visibleIndex / $visibleTotal"
+        } else {
+            "Page $visibleIndex / $visibleTotal"
+        }
+    }
+
     val goToPreviousPage = {
-        val count = pdfSession?.renderer?.pageCount ?: 0
-        if (count == 0) {
+        if (effectivePageOrder.isEmpty()) {
             Unit
-        } else if (pageOrder.size == count) {
-            val pos = pageOrder.indexOf(currentPage)
-            if (pos > 0) currentPage = pageOrder[pos - 1]
-        } else if (currentPage > 0) {
-            currentPage--
+        } else {
+            val pos = effectivePageOrder.indexOf(currentPage)
+            if (pos > 0) currentPage = effectivePageOrder[pos - 1]
         }
     }
     val goToNextPage = {
-        val count = pdfSession?.renderer?.pageCount ?: 0
-        if (count == 0) {
+        if (effectivePageOrder.isEmpty()) {
             Unit
-        } else if (pageOrder.size == count) {
-            val pos = pageOrder.indexOf(currentPage)
-            if (pos in 0 until (count - 1)) currentPage = pageOrder[pos + 1]
-        } else if (currentPage < count - 1) {
-            currentPage++
+        } else {
+            val pos = effectivePageOrder.indexOf(currentPage)
+            if (pos in 0 until effectivePageOrder.lastIndex) currentPage = effectivePageOrder[pos + 1]
         }
     }
     val undoLastAnnotation = {
@@ -568,12 +581,12 @@ private fun PdfReaderScreen() {
 
             Button(
                 onClick = goToPreviousPage,
-                enabled = !isContinuousMode && currentPage > 0 && pdfSession != null
+                enabled = !isContinuousMode && pdfSession != null && hasPreviousPage
             ) { Text("⬅") }
 
             Button(
                 onClick = goToNextPage,
-                enabled = !isContinuousMode && pdfSession != null && currentPage < ((pdfSession?.renderer?.pageCount ?: 1) - 1)
+                enabled = !isContinuousMode && pdfSession != null && hasNextPage
             ) { Text("➡") }
 
             Button(
@@ -1177,12 +1190,13 @@ private fun PdfReaderScreen() {
                     }
 
                     if (showPageOrganizer) {
-                        val sessionPageCount = pdfSession?.renderer?.pageCount ?: 0
-                        val orderedPages = if (pageOrder.size == sessionPageCount) {
+                        val organizerPageCount = pdfSession?.renderer?.pageCount ?: 0
+                        val orderedPages = if (pageOrder.isNotEmpty()) {
                             pageOrder
                         } else {
-                            (0 until sessionPageCount).toList()
+                            (0 until organizerPageCount).toList()
                         }
+                        val missingPages = (0 until organizerPageCount).filterNot { orderedPages.contains(it) }
 
                         Card(
                             modifier = Modifier
@@ -1203,6 +1217,30 @@ private fun PdfReaderScreen() {
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.primary
                                 )
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = {
+                                            if (missingPages.isNotEmpty()) {
+                                                val mutable = orderedPages.toMutableList()
+                                                val anchorIndex = mutable.indexOf(currentPage).let { idx ->
+                                                    if (idx >= 0) idx else mutable.lastIndex
+                                                }
+                                                val insertAt = (anchorIndex + 1).coerceIn(0, mutable.size)
+                                                mutable.add(insertAt, missingPages.first())
+                                                pageOrder = mutable
+                                            }
+                                        },
+                                        enabled = missingPages.isNotEmpty()
+                                    ) { Text("Insert") }
+                                    if (missingPages.isNotEmpty()) {
+                                        Text(
+                                            text = "Hidden pages: ${missingPages.size}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
 
                                 LazyColumn(modifier = Modifier.weight(1f)) {
                                     items(orderedPages.indices.toList()) { idx ->
@@ -1287,6 +1325,25 @@ private fun PdfReaderScreen() {
                                                     },
                                                     enabled = idx < orderedPages.lastIndex
                                                 ) { Text("↓") }
+                                                Button(
+                                                    onClick = {
+                                                        if (orderedPages.size > 1) {
+                                                            val mutable = orderedPages.toMutableList()
+                                                            val removedPage = mutable.removeAt(idx)
+                                                            pageOrder = mutable
+
+                                                            if (currentPage == removedPage) {
+                                                                val fallbackIndex = idx.coerceAtMost(mutable.lastIndex)
+                                                                if (fallbackIndex >= 0) {
+                                                                    currentPage = mutable[fallbackIndex]
+                                                                }
+                                                            } else if (!mutable.contains(currentPage) && mutable.isNotEmpty()) {
+                                                                currentPage = mutable.first()
+                                                            }
+                                                        }
+                                                    },
+                                                    enabled = orderedPages.size > 1
+                                                ) { Text("✕") }
                                             }
                                         }
                                     }
@@ -1295,7 +1352,7 @@ private fun PdfReaderScreen() {
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Button(
                                         onClick = {
-                                            pageOrder = (0 until sessionPageCount).toList()
+                                            pageOrder = (0 until organizerPageCount).toList()
                                         }
                                     ) { Text("Reset") }
                                     Button(onClick = { showPageOrganizer = false }) { Text("Done") }
@@ -1610,17 +1667,7 @@ private fun PdfReaderScreen() {
                         } else {
                             ActionControlsSection(vertical = false, showDockToggle = true)
                         }
-                        Text(
-                            text = if (pdfSession == null) {
-                                "No document selected"
-                            } else {
-                                if (isContinuousMode) {
-                                    "Continuous • Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
-                                } else {
-                                    "Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
-                                }
-                            }
-                        )
+                        Text(text = pageIndicatorText)
 
                         when {
                             isHighlightMode -> Text(
@@ -1714,17 +1761,7 @@ private fun PdfReaderScreen() {
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             RecentLibrarySection()
-                            Text(
-                                text = if (pdfSession == null) {
-                                    "No document selected"
-                                } else {
-                                    if (isContinuousMode) {
-                                        "Continuous • Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
-                                    } else {
-                                        "Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
-                                    }
-                                }
-                            )
+                            Text(text = pageIndicatorText)
 
                             when {
                                 isHighlightMode -> Text("Highlight mode", color = MaterialTheme.colorScheme.primary)
@@ -1754,17 +1791,7 @@ private fun PdfReaderScreen() {
                     ) {
                         RecentLibrarySection()
                         ActionControlsSection(vertical = false, showDockToggle = false)
-                        Text(
-                            text = if (pdfSession == null) {
-                                "No document selected"
-                            } else {
-                                if (isContinuousMode) {
-                                    "Continuous • Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
-                                } else {
-                                    "Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
-                                }
-                            }
-                        )
+                        Text(text = pageIndicatorText)
 
                         when {
                             isHighlightMode -> Text(
