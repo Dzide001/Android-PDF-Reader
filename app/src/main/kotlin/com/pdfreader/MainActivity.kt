@@ -21,13 +21,16 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
@@ -207,286 +210,345 @@ private fun PdfReaderScreen() {
         offsetY = 0f
     }
 
+    @Composable
+    fun RecentLibrarySection() {
+        if (recentDocuments.isNotEmpty()) {
+            Text("Recent PDFs", style = MaterialTheme.typography.titleMedium)
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 180.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                items(recentDocuments) { doc ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = doc.displayName,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    openDocumentFromUriString(
+                                        context = context,
+                                        uriString = doc.uri,
+                                        onOpened = { session, uri ->
+                                            pdfSession?.close()
+                                            pageBitmap?.recycle()
+                                            currentPage = 0
+                                            pdfSession = session
+                                            currentPdfUri = uri
+                                            errorMessage = null
+
+                                            recentDocuments = upsertRecentDocument(
+                                                existing = recentDocuments,
+                                                uri = uri,
+                                                displayName = doc.displayName,
+                                                pageCount = session.renderer.pageCount,
+                                                keepFavorite = doc.isFavorite
+                                            )
+                                            saveRecentDocuments(context, recentDocuments)
+                                        },
+                                        onError = { msg -> errorMessage = msg }
+                                    )
+                                }
+                            }
+                        ) {
+                            Text("Open")
+                        }
+                        Button(
+                            onClick = {
+                                recentDocuments = recentDocuments.map {
+                                    if (it.id == doc.id) it.copy(isFavorite = !it.isFavorite) else it
+                                }
+                                saveRecentDocuments(context, recentDocuments)
+                            }
+                        ) {
+                            Text(if (doc.isFavorite) "★" else "☆")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun ActionControlsSection() {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { openDocumentLauncher.launch(arrayOf("application/pdf")) }) {
+                Text("Open PDF")
+            }
+            Button(
+                onClick = { if (currentPage > 0) currentPage-- },
+                enabled = currentPage > 0 && pdfSession != null
+            ) {
+                Text("Previous")
+            }
+            Button(
+                onClick = {
+                    val count = pdfSession?.renderer?.pageCount ?: 0
+                    if (currentPage < count - 1) currentPage++
+                },
+                enabled = pdfSession != null && currentPage < ((pdfSession?.renderer?.pageCount ?: 1) - 1)
+            ) {
+                Text("Next")
+            }
+            Button(
+                onClick = {
+                    val uri = currentPdfUri ?: return@Button
+                    isExtractingText = true
+                    errorMessage = null
+                    scope.launch {
+                        try {
+                            selectedPageText = extractPageText(context, uri, currentPage)
+                            showTextDialog = true
+                        } catch (e: Exception) {
+                            errorMessage = e.message ?: "Failed to extract page text"
+                        } finally {
+                            isExtractingText = false
+                        }
+                    }
+                },
+                enabled = pdfSession != null && !isExtractingText
+            ) {
+                Text(if (isExtractingText) "Extracting..." else "Text")
+            }
+            Button(
+                onClick = { isHighlightMode = !isHighlightMode },
+                enabled = pdfSession != null
+            ) {
+                Text(if (isHighlightMode) "Highlight ON" else "Highlight")
+            }
+            Button(
+                onClick = {
+                    highlightsByPage = highlightsByPage.toMutableMap().apply {
+                        remove(currentPage)
+                    }
+                },
+                enabled = (highlightsByPage[currentPage]?.isNotEmpty() == true)
+            ) {
+                Text("Clear")
+            }
+            Button(
+                onClick = {
+                    isNightMode = !isNightMode
+                    saveNightModePreference(context, isNightMode)
+                }
+            ) {
+                Text(if (isNightMode) "Light" else "Night")
+            }
+        }
+    }
+
+    @Composable
+    fun ViewerSection(modifier: Modifier = Modifier) {
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            val bitmap = pageBitmap
+            if (bitmap == null) {
+                Text("Open a PDF to begin")
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .onSizeChanged { viewerSize = it }
+                        .graphicsLayer {
+                            scaleX = zoom
+                            scaleY = zoom
+                            translationX = offsetX
+                            translationY = offsetY
+                        }
+                        .transformable(state = transformState, enabled = !isHighlightMode)
+                        .pointerInput(isHighlightMode, currentPage, viewerSize) {
+                            if (!isHighlightMode) return@pointerInput
+                            detectDragGestures(
+                                onDragStart = { offset ->
+                                    dragStart = offset
+                                    dragCurrent = offset
+                                },
+                                onDragEnd = {
+                                    val start = dragStart
+                                    val end = dragCurrent
+                                    val width = viewerSize.width.toFloat()
+                                    val height = viewerSize.height.toFloat()
+
+                                    if (start != null && end != null && width > 0f && height > 0f) {
+                                        val left = minOf(start.x, end.x).coerceIn(0f, width)
+                                        val top = minOf(start.y, end.y).coerceIn(0f, height)
+                                        val right = maxOf(start.x, end.x).coerceIn(0f, width)
+                                        val bottom = maxOf(start.y, end.y).coerceIn(0f, height)
+
+                                        if ((right - left) > 8f && (bottom - top) > 8f) {
+                                            val region = HighlightRegion(
+                                                leftFrac = left / width,
+                                                topFrac = top / height,
+                                                rightFrac = right / width,
+                                                bottomFrac = bottom / height
+                                            )
+                                            val pageRegions = highlightsByPage[currentPage].orEmpty()
+                                            highlightsByPage = highlightsByPage.toMutableMap().apply {
+                                                put(currentPage, pageRegions + region)
+                                            }
+                                        }
+                                    }
+                                    dragStart = null
+                                    dragCurrent = null
+                                },
+                                onDragCancel = {
+                                    dragStart = null
+                                    dragCurrent = null
+                                },
+                                onDrag = { change, _ ->
+                                    dragCurrent = change.position
+                                    change.consume()
+                                }
+                            )
+                        }
+                ) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = "Rendered PDF page",
+                        contentScale = ContentScale.Fit,
+                        colorFilter = if (isNightMode) {
+                            ColorFilter.colorMatrix(
+                                ColorMatrix(
+                                    floatArrayOf(
+                                        -1f, 0f, 0f, 0f, 255f,
+                                        0f, -1f, 0f, 0f, 255f,
+                                        0f, 0f, -1f, 0f, 255f,
+                                        0f, 0f, 0f, 1f, 0f
+                                    )
+                                )
+                            )
+                        } else {
+                            null
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        highlightsByPage[currentPage].orEmpty().forEach { region ->
+                            val left = region.leftFrac * size.width
+                            val top = region.topFrac * size.height
+                            val width = (region.rightFrac - region.leftFrac) * size.width
+                            val height = (region.bottomFrac - region.topFrac) * size.height
+                            drawRect(
+                                color = ComposeColor.Yellow.copy(alpha = 0.35f),
+                                topLeft = Offset(left, top),
+                                size = Size(width, height)
+                            )
+                        }
+
+                        val start = dragStart
+                        val end = dragCurrent
+                        if (start != null && end != null) {
+                            val left = minOf(start.x, end.x)
+                            val top = minOf(start.y, end.y)
+                            val width = kotlin.math.abs(end.x - start.x)
+                            val height = kotlin.math.abs(end.y - start.y)
+                            drawRect(
+                                color = ComposeColor(0xFFFFC107).copy(alpha = 0.25f),
+                                topLeft = Offset(left, top),
+                                size = Size(width, height)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("PDF Reader") })
         }
     ) { paddingValues ->
-        Column(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(12.dp)
         ) {
-            if (recentDocuments.isNotEmpty()) {
-                Text("Recent PDFs", style = MaterialTheme.typography.titleMedium)
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 180.dp)
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                ) {
-                    items(recentDocuments) { doc ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = doc.displayName,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Button(
-                                onClick = {
-                                    scope.launch {
-                                        openDocumentFromUriString(
-                                            context = context,
-                                            uriString = doc.uri,
-                                            onOpened = { session, uri ->
-                                                pdfSession?.close()
-                                                pageBitmap?.recycle()
-                                                currentPage = 0
-                                                pdfSession = session
-                                                currentPdfUri = uri
-                                                errorMessage = null
+            val isTabletLayout = maxWidth >= 900.dp
 
-                                                recentDocuments = upsertRecentDocument(
-                                                    existing = recentDocuments,
-                                                    uri = uri,
-                                                    displayName = doc.displayName,
-                                                    pageCount = session.renderer.pageCount,
-                                                    keepFavorite = doc.isFavorite
-                                                )
-                                                saveRecentDocuments(context, recentDocuments)
-                                            },
-                                            onError = { msg -> errorMessage = msg }
-                                        )
-                                    }
-                                }
-                            ) {
-                                Text("Open")
-                            }
-                            Button(
-                                onClick = {
-                                    recentDocuments = recentDocuments.map {
-                                        if (it.id == doc.id) it.copy(isFavorite = !it.isFavorite) else it
-                                    }
-                                    saveRecentDocuments(context, recentDocuments)
-                                }
-                            ) {
-                                Text(if (doc.isFavorite) "★" else "☆")
-                            }
-                        }
-                    }
-                }
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { openDocumentLauncher.launch(arrayOf("application/pdf")) }) {
-                    Text("Open PDF")
-                }
-                Button(
-                    onClick = { if (currentPage > 0) currentPage-- },
-                    enabled = currentPage > 0 && pdfSession != null
+            if (isTabletLayout) {
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text("Previous")
-                }
-                Button(
-                    onClick = {
-                        val count = pdfSession?.renderer?.pageCount ?: 0
-                        if (currentPage < count - 1) currentPage++
-                    },
-                    enabled = pdfSession != null && currentPage < ((pdfSession?.renderer?.pageCount ?: 1) - 1)
-                ) {
-                    Text("Next")
-                }
-                Button(
-                    onClick = {
-                        val uri = currentPdfUri ?: return@Button
-                        isExtractingText = true
-                        errorMessage = null
-                        scope.launch {
-                            try {
-                                selectedPageText = extractPageText(context, uri, currentPage)
-                                showTextDialog = true
-                            } catch (e: Exception) {
-                                errorMessage = e.message ?: "Failed to extract page text"
-                            } finally {
-                                isExtractingText = false
-                            }
-                        }
-                    },
-                    enabled = pdfSession != null && !isExtractingText
-                ) {
-                    Text(if (isExtractingText) "Extracting..." else "Text")
-                }
-                Button(
-                    onClick = { isHighlightMode = !isHighlightMode },
-                    enabled = pdfSession != null
-                ) {
-                    Text(if (isHighlightMode) "Highlight ON" else "Highlight")
-                }
-                Button(
-                    onClick = {
-                        highlightsByPage = highlightsByPage.toMutableMap().apply {
-                            remove(currentPage)
-                        }
-                    },
-                    enabled = (highlightsByPage[currentPage]?.isNotEmpty() == true)
-                ) {
-                    Text("Clear")
-                }
-                Button(
-                    onClick = {
-                        isNightMode = !isNightMode
-                        saveNightModePreference(context, isNightMode)
-                    }
-                ) {
-                    Text(if (isNightMode) "Light" else "Night")
-                }
-            }
-
-            Text(
-                text = if (pdfSession == null) {
-                    "No document selected"
-                } else {
-                    "Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
-                }
-            )
-
-            if (isHighlightMode) {
-                Text(
-                    text = "Highlight mode: drag on page to mark areas",
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            if (errorMessage != null) {
-                Text(text = errorMessage!!, color = MaterialTheme.colorScheme.error)
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                contentAlignment = Alignment.Center
-            ) {
-                val bitmap = pageBitmap
-                if (bitmap == null) {
-                    Text("Open a PDF to begin")
-                } else {
-                    Box(
+                    Column(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .onSizeChanged { viewerSize = it }
-                            .graphicsLayer {
-                                scaleX = zoom
-                                scaleY = zoom
-                                translationX = offsetX
-                                translationY = offsetY
-                            }
-                            .transformable(state = transformState, enabled = !isHighlightMode)
-                            .pointerInput(isHighlightMode, currentPage, viewerSize) {
-                                if (!isHighlightMode) return@pointerInput
-                                detectDragGestures(
-                                    onDragStart = { offset ->
-                                        dragStart = offset
-                                        dragCurrent = offset
-                                    },
-                                    onDragEnd = {
-                                        val start = dragStart
-                                        val end = dragCurrent
-                                        val width = viewerSize.width.toFloat()
-                                        val height = viewerSize.height.toFloat()
-
-                                        if (start != null && end != null && width > 0f && height > 0f) {
-                                            val left = minOf(start.x, end.x).coerceIn(0f, width)
-                                            val top = minOf(start.y, end.y).coerceIn(0f, height)
-                                            val right = maxOf(start.x, end.x).coerceIn(0f, width)
-                                            val bottom = maxOf(start.y, end.y).coerceIn(0f, height)
-
-                                            if ((right - left) > 8f && (bottom - top) > 8f) {
-                                                val region = HighlightRegion(
-                                                    leftFrac = left / width,
-                                                    topFrac = top / height,
-                                                    rightFrac = right / width,
-                                                    bottomFrac = bottom / height
-                                                )
-                                                val pageRegions = highlightsByPage[currentPage].orEmpty()
-                                                highlightsByPage = highlightsByPage.toMutableMap().apply {
-                                                    put(currentPage, pageRegions + region)
-                                                }
-                                            }
-                                        }
-                                        dragStart = null
-                                        dragCurrent = null
-                                    },
-                                    onDragCancel = {
-                                        dragStart = null
-                                        dragCurrent = null
-                                    },
-                                    onDrag = { change, _ ->
-                                        dragCurrent = change.position
-                                        change.consume()
-                                    }
-                                )
-                            }
+                            .width(380.dp)
+                            .fillMaxHeight(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Image(
-                            bitmap = bitmap.asImageBitmap(),
-                            contentDescription = "Rendered PDF page",
-                            contentScale = ContentScale.Fit,
-                            colorFilter = if (isNightMode) {
-                                ColorFilter.colorMatrix(
-                                    ColorMatrix(
-                                        floatArrayOf(
-                                            -1f, 0f, 0f, 0f, 255f,
-                                            0f, -1f, 0f, 0f, 255f,
-                                            0f, 0f, -1f, 0f, 255f,
-                                            0f, 0f, 0f, 1f, 0f
-                                        )
-                                    )
-                                )
+                        RecentLibrarySection()
+                        ActionControlsSection()
+                        Text(
+                            text = if (pdfSession == null) {
+                                "No document selected"
                             } else {
-                                null
-                            },
-                            modifier = Modifier.fillMaxSize()
+                                "Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
+                            }
                         )
 
-                        Canvas(modifier = Modifier.fillMaxSize()) {
-                            highlightsByPage[currentPage].orEmpty().forEach { region ->
-                                val left = region.leftFrac * size.width
-                                val top = region.topFrac * size.height
-                                val width = (region.rightFrac - region.leftFrac) * size.width
-                                val height = (region.bottomFrac - region.topFrac) * size.height
-                                drawRect(
-                                    color = ComposeColor.Yellow.copy(alpha = 0.35f),
-                                    topLeft = Offset(left, top),
-                                    size = Size(width, height)
-                                )
-                            }
+                        if (isHighlightMode) {
+                            Text(
+                                text = "Highlight mode: drag on page to mark areas",
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
 
-                            val start = dragStart
-                            val end = dragCurrent
-                            if (start != null && end != null) {
-                                val left = minOf(start.x, end.x)
-                                val top = minOf(start.y, end.y)
-                                val width = kotlin.math.abs(end.x - start.x)
-                                val height = kotlin.math.abs(end.y - start.y)
-                                drawRect(
-                                    color = ComposeColor(0xFFFFC107).copy(alpha = 0.25f),
-                                    topLeft = Offset(left, top),
-                                    size = Size(width, height)
-                                )
-                            }
+                        if (errorMessage != null) {
+                            Text(text = errorMessage!!, color = MaterialTheme.colorScheme.error)
                         }
                     }
+
+                    ViewerSection(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                    )
+                }
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    RecentLibrarySection()
+                    ActionControlsSection()
+                    Text(
+                        text = if (pdfSession == null) {
+                            "No document selected"
+                        } else {
+                            "Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
+                        }
+                    )
+
+                    if (isHighlightMode) {
+                        Text(
+                            text = "Highlight mode: drag on page to mark areas",
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    if (errorMessage != null) {
+                        Text(text = errorMessage!!, color = MaterialTheme.colorScheme.error)
+                    }
+
+                    ViewerSection(modifier = Modifier.weight(1f))
                 }
             }
         }

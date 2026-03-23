@@ -599,7 +599,7 @@ data class TextBox(val rect: Rect, val text: String)
 - [x] **MA.5** - Basic highlight annotation
 - [x] **MA.6** - Local file library with persisted recent documents
 - [x] **MA.7** - Night mode toggle
-- [ ] **MA.8** - Tablet-responsive UI layout
+- [x] **MA.8** - Tablet-responsive UI layout
 - [ ] **MA.9** - Performance optimization and testing
 - [ ] **MA.10** - Beta 1 release on F-Droid
 
