@@ -56,6 +56,8 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -126,6 +128,7 @@ private fun PdfReaderScreen() {
     var selectedPageText by remember { mutableStateOf("") }
     var showTextDialog by remember { mutableStateOf(false) }
     var isExtractingText by remember { mutableStateOf(false) }
+    var isNightMode by remember { mutableStateOf(loadNightModePreference(context)) }
     var isHighlightMode by remember { mutableStateOf(false) }
     var highlightsByPage by remember { mutableStateOf<Map<Int, List<HighlightRegion>>>(emptyMap()) }
     var dragStart by remember { mutableStateOf<Offset?>(null) }
@@ -338,6 +341,14 @@ private fun PdfReaderScreen() {
                 ) {
                     Text("Clear")
                 }
+                Button(
+                    onClick = {
+                        isNightMode = !isNightMode
+                        saveNightModePreference(context, isNightMode)
+                    }
+                ) {
+                    Text(if (isNightMode) "Light" else "Night")
+                }
             }
 
             Text(
@@ -431,6 +442,20 @@ private fun PdfReaderScreen() {
                             bitmap = bitmap.asImageBitmap(),
                             contentDescription = "Rendered PDF page",
                             contentScale = ContentScale.Fit,
+                            colorFilter = if (isNightMode) {
+                                ColorFilter.colorMatrix(
+                                    ColorMatrix(
+                                        floatArrayOf(
+                                            -1f, 0f, 0f, 0f, 255f,
+                                            0f, -1f, 0f, 0f, 255f,
+                                            0f, 0f, -1f, 0f, 255f,
+                                            0f, 0f, 0f, 1f, 0f
+                                        )
+                                    )
+                                )
+                            } else {
+                                null
+                            },
                             modifier = Modifier.fillMaxSize()
                         )
 
@@ -607,6 +632,16 @@ private fun saveRecentDocuments(context: android.content.Context, docs: List<Rec
     }
     val prefs = context.getSharedPreferences("pdf_reader_prefs", android.content.Context.MODE_PRIVATE)
     prefs.edit().putString("recent_documents_json", array.toString()).apply()
+}
+
+private fun loadNightModePreference(context: android.content.Context): Boolean {
+    val prefs = context.getSharedPreferences("pdf_reader_prefs", android.content.Context.MODE_PRIVATE)
+    return prefs.getBoolean("night_mode_enabled", false)
+}
+
+private fun saveNightModePreference(context: android.content.Context, enabled: Boolean) {
+    val prefs = context.getSharedPreferences("pdf_reader_prefs", android.content.Context.MODE_PRIVATE)
+    prefs.edit().putBoolean("night_mode_enabled", enabled).apply()
 }
 
 private fun upsertRecentDocument(
