@@ -25,6 +25,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
@@ -261,6 +262,8 @@ private fun PdfReaderScreen() {
     var activeTextHandle by remember { mutableStateOf<TextHandleDrag?>(null) }
     var pageOrder by remember(currentPdfUri) { mutableStateOf<List<Int>>(emptyList()) }
     var showPageOrganizer by remember { mutableStateOf(false) }
+    var draggingOrganizerIndex by remember { mutableIntStateOf(-1) }
+    var organizerDragDy by remember { mutableFloatStateOf(0f) }
 
     val goToPreviousPage = {
         val count = pdfSession?.renderer?.pageCount ?: 0
@@ -1195,16 +1198,70 @@ private fun PdfReaderScreen() {
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Text("Page Organizer", style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    "Long-press and drag a row to reorder",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
 
                                 LazyColumn(modifier = Modifier.weight(1f)) {
                                     items(orderedPages.indices.toList()) { idx ->
                                         val pageNum = orderedPages[idx] + 1
                                         Row(
-                                            modifier = Modifier.fillMaxWidth(),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .background(
+                                                    if (idx == draggingOrganizerIndex) {
+                                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                                    } else {
+                                                        ComposeColor.Transparent
+                                                    }
+                                                )
+                                                .pointerInput(orderedPages, idx) {
+                                                    detectDragGesturesAfterLongPress(
+                                                        onDragStart = {
+                                                            draggingOrganizerIndex = idx
+                                                            organizerDragDy = 0f
+                                                        },
+                                                        onDragCancel = {
+                                                            draggingOrganizerIndex = -1
+                                                            organizerDragDy = 0f
+                                                        },
+                                                        onDragEnd = {
+                                                            draggingOrganizerIndex = -1
+                                                            organizerDragDy = 0f
+                                                        },
+                                                        onDrag = { change, dragAmount ->
+                                                            change.consume()
+                                                            val currentDragIndex = draggingOrganizerIndex
+                                                            if (currentDragIndex !in orderedPages.indices) return@detectDragGesturesAfterLongPress
+
+                                                            organizerDragDy += dragAmount.y
+                                                            val threshold = 36f
+                                                            if (organizerDragDy > threshold && currentDragIndex < orderedPages.lastIndex) {
+                                                                val mutable = orderedPages.toMutableList()
+                                                                val temp = mutable[currentDragIndex + 1]
+                                                                mutable[currentDragIndex + 1] = mutable[currentDragIndex]
+                                                                mutable[currentDragIndex] = temp
+                                                                pageOrder = mutable
+                                                                draggingOrganizerIndex = currentDragIndex + 1
+                                                                organizerDragDy = 0f
+                                                            } else if (organizerDragDy < -threshold && currentDragIndex > 0) {
+                                                                val mutable = orderedPages.toMutableList()
+                                                                val temp = mutable[currentDragIndex - 1]
+                                                                mutable[currentDragIndex - 1] = mutable[currentDragIndex]
+                                                                mutable[currentDragIndex] = temp
+                                                                pageOrder = mutable
+                                                                draggingOrganizerIndex = currentDragIndex - 1
+                                                                organizerDragDy = 0f
+                                                            }
+                                                        }
+                                                    )
+                                                },
                                             horizontalArrangement = Arrangement.SpaceBetween,
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Text("Slot ${idx + 1}: Page $pageNum")
+                                            Text("☰  Slot ${idx + 1}: Page $pageNum")
                                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                                 Button(
                                                     onClick = {

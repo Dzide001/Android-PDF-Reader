@@ -610,7 +610,7 @@ data class TextBox(val rect: Rect, val text: String)
 - [x] **MB.4** - Shape tools (rectangles, circles, arrows)
 - [x] **MB.5** - Eraser tool
 - [x] **MB.6** - Dual-pane tablet layout
-- [ ] **MB.7** - Page reordering (drag-and-drop)
+- [x] **MB.7** - Page reordering (drag-and-drop)
 - [ ] **MB.8** - Page insertion and deletion
 - [ ] **MB.9** - Basic form filling (text fields, checkboxes)
 - [ ] **MB.10** - Signature capture and placement
