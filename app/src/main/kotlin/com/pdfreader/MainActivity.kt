@@ -259,13 +259,30 @@ private fun PdfReaderScreen() {
     var textBoxesByPage by remember { mutableStateOf<Map<Int, List<TextCharBox>>>(emptyMap()) }
     var selectedTextRange by remember { mutableStateOf<IntRange?>(null) }
     var activeTextHandle by remember { mutableStateOf<TextHandleDrag?>(null) }
+    var pageOrder by remember(currentPdfUri) { mutableStateOf<List<Int>>(emptyList()) }
+    var showPageOrganizer by remember { mutableStateOf(false) }
 
     val goToPreviousPage = {
-        if (currentPage > 0) currentPage--
+        val count = pdfSession?.renderer?.pageCount ?: 0
+        if (count == 0) {
+            Unit
+        } else if (pageOrder.size == count) {
+            val pos = pageOrder.indexOf(currentPage)
+            if (pos > 0) currentPage = pageOrder[pos - 1]
+        } else if (currentPage > 0) {
+            currentPage--
+        }
     }
     val goToNextPage = {
         val count = pdfSession?.renderer?.pageCount ?: 0
-        if (currentPage < count - 1) currentPage++
+        if (count == 0) {
+            Unit
+        } else if (pageOrder.size == count) {
+            val pos = pageOrder.indexOf(currentPage)
+            if (pos in 0 until (count - 1)) currentPage = pageOrder[pos + 1]
+        } else if (currentPage < count - 1) {
+            currentPage++
+        }
     }
     val undoLastAnnotation = {
         when {
@@ -391,6 +408,8 @@ private fun PdfReaderScreen() {
 
             pdfSession = PdfSession(pfd, renderer)
             currentPdfUri = uri
+            pageOrder = (0 until renderer.pageCount).toList()
+            showPageOrganizer = false
 
             recentDocuments = upsertRecentDocument(
                 existing = recentDocuments,
@@ -413,6 +432,9 @@ private fun PdfReaderScreen() {
 
     LaunchedEffect(pdfSession, currentPage, isContinuousMode) {
         val session = pdfSession ?: return@LaunchedEffect
+        if (pageOrder.size != session.renderer.pageCount) {
+            pageOrder = (0 until session.renderer.pageCount).toList()
+        }
         if (isContinuousMode) {
             pageBitmap = null
             lastRenderMs = null
@@ -649,6 +671,11 @@ private fun PdfReaderScreen() {
                 onClick = { isEraserMode = !isEraserMode },
                 enabled = pdfSession != null && isDrawingMode && !isContinuousMode
             ) { Text(if (isEraserMode) "🧽✓" else "🧽") }
+
+            Button(
+                onClick = { showPageOrganizer = !showPageOrganizer },
+                enabled = pdfSession != null
+            ) { Text(if (showPageOrganizer) "🗂✓" else "🗂") }
 
             Button(
                 onClick = undoLastAnnotation,
@@ -1145,6 +1172,80 @@ private fun PdfReaderScreen() {
                             }
                         }
                     }
+
+                    if (showPageOrganizer) {
+                        val sessionPageCount = pdfSession?.renderer?.pageCount ?: 0
+                        val orderedPages = if (pageOrder.size == sessionPageCount) {
+                            pageOrder
+                        } else {
+                            (0 until sessionPageCount).toList()
+                        }
+
+                        Card(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(10.dp)
+                                .fillMaxWidth(0.95f)
+                                .fillMaxHeight(0.42f)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text("Page Organizer", style = MaterialTheme.typography.titleMedium)
+
+                                LazyColumn(modifier = Modifier.weight(1f)) {
+                                    items(orderedPages.indices.toList()) { idx ->
+                                        val pageNum = orderedPages[idx] + 1
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text("Slot ${idx + 1}: Page $pageNum")
+                                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                Button(
+                                                    onClick = {
+                                                        if (idx > 0) {
+                                                            val mutable = orderedPages.toMutableList()
+                                                            val temp = mutable[idx - 1]
+                                                            mutable[idx - 1] = mutable[idx]
+                                                            mutable[idx] = temp
+                                                            pageOrder = mutable
+                                                        }
+                                                    },
+                                                    enabled = idx > 0
+                                                ) { Text("↑") }
+                                                Button(
+                                                    onClick = {
+                                                        if (idx < orderedPages.lastIndex) {
+                                                            val mutable = orderedPages.toMutableList()
+                                                            val temp = mutable[idx + 1]
+                                                            mutable[idx + 1] = mutable[idx]
+                                                            mutable[idx] = temp
+                                                            pageOrder = mutable
+                                                        }
+                                                    },
+                                                    enabled = idx < orderedPages.lastIndex
+                                                ) { Text("↓") }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = {
+                                            pageOrder = (0 until sessionPageCount).toList()
+                                        }
+                                    ) { Text("Reset") }
+                                    Button(onClick = { showPageOrganizer = false }) { Text("Done") }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1317,12 +1418,16 @@ private fun PdfReaderScreen() {
         }
 
         val totalPages = session.renderer.pageCount
-        val initialIndex = currentPage.coerceIn(0, (totalPages - 1).coerceAtLeast(0))
+        val orderedPages = if (pageOrder.size == totalPages) pageOrder else (0 until totalPages).toList()
+        val initialIndex = orderedPages.indexOf(currentPage).let { idx ->
+            if (idx >= 0) idx else 0
+        }.coerceIn(0, (totalPages - 1).coerceAtLeast(0))
         val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialIndex)
 
-        LaunchedEffect(listState.firstVisibleItemIndex, totalPages) {
+        LaunchedEffect(listState.firstVisibleItemIndex, totalPages, orderedPages) {
             if (totalPages > 0) {
-                currentPage = listState.firstVisibleItemIndex.coerceIn(0, totalPages - 1)
+                val visiblePos = listState.firstVisibleItemIndex.coerceIn(0, totalPages - 1)
+                currentPage = orderedPages[visiblePos]
             }
         }
 
@@ -1333,7 +1438,7 @@ private fun PdfReaderScreen() {
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(totalPages) { pageIndex ->
+            items(orderedPages) { pageIndex ->
                 val pageBitmapState = produceState<Bitmap?>(
                     initialValue = pageCache.get(pageIndex),
                     key1 = session,
