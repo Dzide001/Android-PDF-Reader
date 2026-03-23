@@ -28,6 +28,7 @@ androidx-test-espresso = "3.5.1"
 # Third-party
 mupdf = "1.24.2"
 tesseract = "5.3.1"
+tess-two = "9.1.0"
 pdfbox-android = "2.0.27.0"
 
 [libraries]
@@ -60,6 +61,7 @@ junit = { module = "junit:junit", version.ref = "junit" }
 androidx-test-junit = { module = "androidx.test.ext:junit", version.ref = "androidx-test-junit" }
 androidx-test-espresso = { module = "androidx.test.espresso:espresso-core", version.ref = "androidx-test-espresso" }
 pdfbox-android = { module = "com.tom-roush:pdfbox-android", version.ref = "pdfbox-android" }
+tess-two = { module = "com.rmtheis:tess-two", version.ref = "tess-two" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "android-gradle-plugin" }

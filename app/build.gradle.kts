@@ -81,6 +81,7 @@ dependencies {
     implementation(project(":core:pdf-engine"))
     implementation(project(":core:renderer"))
     implementation(project(":core:annotations"))
+    implementation(project(":core:ocr"))
     implementation(project(":core:storage"))
 
     // Testing

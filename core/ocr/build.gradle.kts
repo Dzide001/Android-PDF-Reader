@@ -24,4 +24,5 @@ android {
 dependencies {
     implementation(libs.kotlin.stdlib)
     implementation(libs.kotlin.coroutines)
+    implementation(libs.tess.two)
 }

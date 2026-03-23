@@ -617,7 +617,7 @@ data class TextBox(val rect: Rect, val text: String)
 - [x] **MB.11** - Beta 2 release
 
 ### Phase C Milestones
-- [ ] **MC.1** - Tesseract integration and build
+- [x] **MC.1** - Tesseract integration and build
 - [ ] **MC.2** - Background OCR with WorkManager
 - [ ] **MC.3** - hOCR parsing and layout reconstruction
 - [ ] **MC.4** - Full-text search indexing (FTS5)
