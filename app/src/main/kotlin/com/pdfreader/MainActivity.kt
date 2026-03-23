@@ -2,6 +2,10 @@ package com.pdfreader
 
 import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
+import android.graphics.Paint
+import android.graphics.Canvas as AndroidCanvas
+import android.graphics.Path
+import android.graphics.PorterDuff
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Bundle
@@ -9,6 +13,7 @@ import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.util.LruCache
+import android.view.MotionEvent
 import org.json.JSONArray
 import org.json.JSONObject
 import androidx.activity.ComponentActivity
@@ -97,6 +102,20 @@ private data class HighlightRegion(
     val bottomFrac: Float
 )
 
+private data class StrokePoint(
+    val x: Float,
+    val y: Float,
+    val pressure: Float,  // Range: 0.0 - 1.0; 0 for touch, pressure-sensitive for stylus
+    val size: Float       // Calculated stroke width based on pressure
+)
+
+private data class Stroke(
+    val points: List<StrokePoint>,
+    val color: Long = 0xFF000000,  // ARGB; default black
+    val isErasing: Boolean = false,
+    val pageIndex: Int
+)
+
 private data class RecentDocument(
     val id: String,
     val displayName: String,
@@ -180,6 +199,13 @@ private fun PdfReaderScreen() {
     var offsetY by remember { mutableFloatStateOf(0f) }
     var lastRenderMs by remember { mutableStateOf<Long?>(null) }
     val renderMutex = remember(currentPdfUri) { Mutex() }
+
+    // Stylus drawing state
+    var isDrawingMode by remember { mutableStateOf(false) }
+    var strokesByPage by remember { mutableStateOf<Map<Int, List<Stroke>>>(emptyMap()) }
+    var currentStrokePoints by remember { mutableStateOf<List<StrokePoint>>(emptyList()) }
+    var drawingColor by remember { mutableStateOf(0xFF000000) }  // Black
+    var isEraserMode by remember { mutableStateOf(false) }
 
     val goToPreviousPage = {
         if (currentPage > 0) currentPage--
@@ -459,11 +485,31 @@ private fun PdfReaderScreen() {
                 onClick = {
                     if (!isContinuousMode) {
                         isHighlightMode = !isHighlightMode
+                        if (isHighlightMode) isDrawingMode = false
                     }
                 },
                 enabled = pdfSession != null && !isContinuousMode
             ) {
                 Text(if (isHighlightMode) "Highlight ON" else "Highlight")
+            }
+            Button(
+                onClick = {
+                    if (!isContinuousMode) {
+                        isDrawingMode = !isDrawingMode
+                        if (isDrawingMode) isHighlightMode = false
+                    }
+                },
+                enabled = pdfSession != null && !isContinuousMode
+            ) {
+                Text(if (isDrawingMode) "Draw ON" else "Draw")
+            }
+            Button(
+                onClick = {
+                    isEraserMode = !isEraserMode
+                },
+                enabled = pdfSession != null && isDrawingMode && !isContinuousMode
+            ) {
+                Text(if (isEraserMode) "Eraser ON" else "Eraser")
             }
             Button(
                 onClick = {
@@ -477,10 +523,21 @@ private fun PdfReaderScreen() {
             }
             Button(
                 onClick = {
+                    strokesByPage = strokesByPage.toMutableMap().apply {
+                        remove(currentPage)
+                    }
+                },
+                enabled = !isContinuousMode && (strokesByPage[currentPage]?.isNotEmpty() == true)
+            ) {
+                Text("Clear Strokes")
+            }
+            Button(
+                onClick = {
                     isContinuousMode = !isContinuousMode
                     saveContinuousModePreference(context, isContinuousMode)
                     if (isContinuousMode) {
                         isHighlightMode = false
+                        isDrawingMode = false
                         zoom = 1f
                         offsetX = 0f
                         offsetY = 0f
@@ -665,6 +722,88 @@ private fun PdfReaderScreen() {
     }
 
     @Composable
+    fun DrawingOverlaySection(modifier: Modifier = Modifier) {
+        if (!isDrawingMode) return
+
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(ComposeColor.Transparent)
+                .pointerInput(isDrawingMode, currentPage, viewerSize, isEraserMode) {
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            currentStrokePoints = listOf(
+                                StrokePoint(
+                                    x = offset.x,
+                                    y = offset.y,
+                                    pressure = 0.5f,  // Default pressure for touch
+                                    size = calculateStrokeWidth(0.5f, isEraserMode)
+                                )
+                            )
+                        },
+                        onDrag = { change, _ ->
+                            change.consume()
+                            val point = StrokePoint(
+                                x = change.position.x,
+                                y = change.position.y,
+                                pressure = 0.5f,  // Touch doesn't have pressure; stylus would via platform layer
+                                size = calculateStrokeWidth(0.5f, isEraserMode)
+                            )
+                            currentStrokePoints = (currentStrokePoints + point).takeLast(500)
+                        },
+                        onDragEnd = {
+                            if (currentStrokePoints.isNotEmpty()) {
+                                val stroke = Stroke(
+                                    points = currentStrokePoints,
+                                    color = if (isEraserMode) 0 else drawingColor,
+                                    isErasing = isEraserMode,
+                                    pageIndex = currentPage
+                                )
+                                strokesByPage = strokesByPage.toMutableMap().apply {
+                                    val existing = getOrDefault(currentPage, emptyList())
+                                    put(currentPage, existing + stroke)
+                                }
+                            }
+                            currentStrokePoints = emptyList()
+                        },
+                        onDragCancel = {
+                            currentStrokePoints = emptyList()
+                        }
+                    )
+                }
+        ) {
+            // Render completed strokes from this page
+            val pageStrokes = strokesByPage[currentPage] ?: emptyList()
+            if (pageStrokes.isNotEmpty()) {
+                val bitmap = remember(pageStrokes) {
+                    renderStrokesToBitmap(viewerSize.width, viewerSize.height, pageStrokes)
+                }
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.FillBounds
+                )
+            }
+
+            // Render current stroke being drawn
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                currentStrokePoints.forEachIndexed { idx, point ->
+                    if (idx > 0) {
+                        val prev = currentStrokePoints[idx - 1]
+                        drawLine(
+                            color = ComposeColor(drawingColor),
+                            start = Offset(prev.x, prev.y),
+                            end = Offset(point.x, point.y),
+                            strokeWidth = point.size
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
     fun ContinuousViewerSection(modifier: Modifier = Modifier) {
         val session = pdfSession
         if (session == null) {
@@ -817,11 +956,17 @@ private fun PdfReaderScreen() {
                                 .fillMaxHeight()
                         )
                     } else {
-                        ViewerSection(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                        )
+                        Box(modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                        ) {
+                            ViewerSection(
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            DrawingOverlaySection(
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                     }
                 }
             } else {
@@ -1111,4 +1256,55 @@ private fun applyPanResistance(
     val softLimitY = maxY * 1.15f
 
     return resistedX.coerceIn(-softLimitX, softLimitX) to resistedY.coerceIn(-softLimitY, softLimitY)
+}
+
+private fun calculateStrokeWidth(pressure: Float, isEraser: Boolean = false): Float {
+    // Stylus pressure: 0.0-1.0; map to 2-8 dp
+    // Touch pressure ~0.0; use default 4 dp
+    val baseDp = if (pressure > 0.01f) {
+        2f + (pressure * 6f)
+    } else {
+        4f
+    }
+    return if (isEraser) baseDp * 1.5f else baseDp
+}
+
+private fun renderStrokesToBitmap(
+    width: Int,
+    height: Int,
+    strokes: List<Stroke>
+): Bitmap {
+    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    bitmap.eraseColor(AndroidColor.TRANSPARENT)
+
+    if (strokes.isEmpty()) return bitmap
+
+    val canvas = AndroidCanvas(bitmap)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    strokes.forEach { stroke ->
+        paint.color = stroke.color.toInt()
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.strokeJoin = Paint.Join.ROUND
+
+        if (stroke.isErasing) {
+            // Eraser: clear pixels with PorterDuff
+            paint.xfermode = android.graphics.PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+        } else {
+            paint.xfermode = null
+        }
+
+        val path = Path()
+        stroke.points.forEachIndexed { idx, point ->
+            paint.strokeWidth = point.size
+            if (idx == 0) {
+                path.moveTo(point.x, point.y)
+            } else {
+                path.lineTo(point.x, point.y)
+            }
+        }
+        canvas.drawPath(path, paint)
+    }
+
+    return bitmap
 }
