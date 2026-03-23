@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.kapt)
 }
 
 android {
@@ -73,6 +74,8 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.lifecycle.viewmodel)
     implementation(libs.androidx.lifecycle.runtime)
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
     implementation(libs.androidx.workmanager)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.pdfbox.android)
@@ -83,6 +86,9 @@ dependencies {
     implementation(project(":core:annotations"))
     implementation(project(":core:ocr"))
     implementation(project(":core:storage"))
+
+    // Room annotation processor (kapt)
+    kapt(libs.androidx.room.compiler)
 
     // Testing
     testImplementation(libs.junit)

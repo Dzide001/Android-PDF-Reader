@@ -93,6 +93,10 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import com.pdfreader.workers.OcrWorker
+import androidx.work.WorkInfo
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -315,6 +319,13 @@ private fun PdfReaderScreen() {
     var signaturePlacementsByPage by remember { mutableStateOf<Map<Int, List<SignaturePlacement>>>(emptyMap()) }
     var signatureDragStart by remember { mutableStateOf<Offset?>(null) }
     var signatureDragCurrent by remember { mutableStateOf<Offset?>(null) }
+
+    // OCR state
+    var showOcrProgress by remember { mutableStateOf(false) }
+    var ocrProgressPage by remember { mutableIntStateOf(0) }
+    var isOcrProcessing by remember { mutableStateOf(false) }
+    var ocrWorkStatus by remember { mutableStateOf<String?>(null) }
+    var ocrWorkRequestId by remember { mutableStateOf<String?>(null) }
 
     val sessionPageCount = pdfSession?.renderer?.pageCount ?: 0
     val effectivePageOrder = if (pageOrder.isNotEmpty()) pageOrder else (0 until sessionPageCount).toList()
@@ -847,6 +858,57 @@ private fun PdfReaderScreen() {
                 },
                 enabled = !isContinuousMode && (shapesByPage[currentPage]?.isNotEmpty() == true)
             ) { Text("CLR-S") }
+
+            Button(
+                onClick = {
+                    val uri = currentPdfUri ?: return@Button
+                    val path = getRealPathFromUri(context, uri) ?: return@Button
+                    isOcrProcessing = true
+                    showOcrProgress = true
+                    ocrProgressPage = currentPage
+                    ocrWorkStatus = "Processing..."
+                    scope.launch {
+                        try {
+                            val inputData = OcrWorker.createInputData(
+                                documentId = uri.lastPathSegment ?: "pdf_${System.currentTimeMillis()}",
+                                pageNumber = currentPage,
+                                pdfPath = path,
+                                language = "eng"
+                            )
+                            val ocrRequest = OneTimeWorkRequestBuilder<OcrWorker>()
+                                .setInputData(inputData)
+                                .build()
+                            ocrWorkRequestId = ocrRequest.id.toString()
+                            WorkManager.getInstance(context).enqueueUniqueWork(
+                                "${OcrWorker.UNIQUE_WORK_NAME}_${currentPage}",
+                                androidx.work.ExistingWorkPolicy.KEEP,
+                                ocrRequest
+                            )
+                            // Observe work info
+                            WorkManager.getInstance(context)
+                                .getWorkInfoByIdLiveData(ocrRequest.id).observeForever { workInfo ->
+                                    ocrWorkStatus = when (workInfo.state) {
+                                        WorkInfo.State.SUCCEEDED -> "✓ Completed"
+                                        WorkInfo.State.FAILED -> "✗ Failed"
+                                        WorkInfo.State.RUNNING -> "Processing..."
+                                        WorkInfo.State.BLOCKED -> "Blocked"
+                                        WorkInfo.State.CANCELLED -> "Cancelled"
+                                        WorkInfo.State.ENQUEUED -> "Queued"
+                                    }
+                                    if (workInfo.state.isFinished) {
+                                        isOcrProcessing = false
+                                    }
+                                }
+                        } catch (e: Exception) {
+                            errorMessage = "OCR failed: ${e.message}"
+                            isOcrProcessing = false
+                            ocrWorkStatus = "Error: ${e.message}"
+                        }
+                    }
+                },
+                enabled = pdfSession != null && !isContinuousMode && !isOcrProcessing
+            ) { Text(if (isOcrProcessing) "🔍●" else "🔍") }
+
 
             Button(
                 onClick = {
@@ -1804,6 +1866,34 @@ private fun PdfReaderScreen() {
                                             showSignaturePanel = false
                                         }
                                     ) { Text("Done") }
+                                }
+                            }
+                        }
+                    }
+
+                    if (showOcrProgress) {
+                        Card(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(10.dp)
+                                .fillMaxWidth(0.92f)
+                                .fillMaxHeight(0.2f)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.Center,
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text("OCR Processing", style = MaterialTheme.typography.titleMedium)
+                                Text("Page ${ocrProgressPage + 1}", style = MaterialTheme.typography.bodySmall)
+                                Text(ocrWorkStatus ?: "Processing…", style = MaterialTheme.typography.bodyMedium)
+                                
+                                if (!isOcrProcessing) {
+                                    Button(onClick = { showOcrProgress = false; ocrWorkStatus = null }) { 
+                                        Text("Close") 
+                                    }
                                 }
                             }
                         }
@@ -3107,4 +3197,28 @@ private fun saveSavedSignatureStrokes(context: android.content.Context, strokes:
 
     val prefs = context.getSharedPreferences("pdf_reader_prefs", android.content.Context.MODE_PRIVATE)
     prefs.edit().putString("saved_signature_strokes", strokesArray.toString()).apply()
+}
+
+private fun getRealPathFromUri(context: android.content.Context, uri: Uri): String? {
+    return when (uri.scheme) {
+        "file" -> uri.path
+        "content" -> {
+            try {
+                val projection = arrayOf("_data")
+                context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        cursor.getColumnIndex("_data").takeIf { it >= 0 }?.let { col ->
+                            cursor.getString(col)
+                        }
+                    } else {
+                        null
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            }
+        }
+        else -> null
+    }
 }
