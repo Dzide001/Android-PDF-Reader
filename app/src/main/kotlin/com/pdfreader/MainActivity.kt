@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -449,7 +450,12 @@ private fun PdfReaderScreen() {
 
     @Composable
     fun ActionControlsSection() {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             Button(onClick = { openDocumentLauncher.launch(arrayOf("application/pdf")) }) {
                 Text("Open PDF")
             }
@@ -718,6 +724,50 @@ private fun PdfReaderScreen() {
                                 topLeft = Offset(left, top),
                                 size = Size(width, height)
                             )
+                        }
+                    }
+
+                    if (showTextDialog) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(ComposeColor.Black.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth(0.92f)
+                                    .fillMaxHeight(0.72f)
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text("Page Text", style = MaterialTheme.typography.titleMedium)
+                                    SelectionContainer {
+                                        Text(
+                                            text = selectedPageText.ifBlank {
+                                                "No extractable text found on this page. This may be a scanned/image-only page."
+                                            },
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .verticalScroll(rememberScrollState())
+                                        )
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        TextButton(onClick = {
+                                            clipboardManager.setText(AnnotatedString(selectedPageText))
+                                        }) {
+                                            Text("Copy")
+                                        }
+                                        TextButton(onClick = { showTextDialog = false }) {
+                                            Text("Close")
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1064,55 +1114,6 @@ private fun PdfReaderScreen() {
         }
     }
 
-    if (showTextDialog) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            contentAlignment = Alignment.BottomCenter
-        ) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 140.dp, max = 320.dp)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text("Page Text", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "Long-press text to select like standard readers",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    SelectionContainer {
-                        Text(
-                            text = selectedPageText.ifBlank {
-                                "No extractable text found on this page. This may be a scanned/image-only page."
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .verticalScroll(rememberScrollState())
-                        )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(onClick = {
-                            clipboardManager.setText(AnnotatedString(selectedPageText))
-                            showTextDialog = false
-                        }) {
-                            Text("Copy")
-                        }
-                        TextButton(onClick = { showTextDialog = false }) {
-                            Text("Close")
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 private suspend fun renderPageBitmap(renderer: PdfRenderer, pageIndex: Int): Bitmap =
