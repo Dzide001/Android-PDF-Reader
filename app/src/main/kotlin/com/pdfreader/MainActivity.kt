@@ -81,6 +81,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
@@ -232,6 +238,7 @@ private fun PdfReaderScreen() {
     var offsetY by remember { mutableFloatStateOf(0f) }
     var lastRenderMs by remember { mutableStateOf<Long?>(null) }
     val renderMutex = remember(currentPdfUri) { Mutex() }
+    var isToolbarDockedLeft by remember { mutableStateOf(loadToolbarDockPreference(context)) }
 
     // Stylus drawing state
     var isDrawingMode by remember { mutableStateOf(false) }
@@ -259,6 +266,33 @@ private fun PdfReaderScreen() {
     val goToNextPage = {
         val count = pdfSession?.renderer?.pageCount ?: 0
         if (currentPage < count - 1) currentPage++
+    }
+    val undoLastAnnotation = {
+        when {
+            isDrawingMode && (strokesByPage[currentPage]?.isNotEmpty() == true) -> {
+                strokesByPage = strokesByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
+            }
+
+            isShapeMode && (shapesByPage[currentPage]?.isNotEmpty() == true) -> {
+                shapesByPage = shapesByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
+            }
+
+            isHighlightMode && (highlightsByPage[currentPage]?.isNotEmpty() == true) -> {
+                highlightsByPage = highlightsByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
+            }
+
+            (shapesByPage[currentPage]?.isNotEmpty() == true) -> {
+                shapesByPage = shapesByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
+            }
+
+            (strokesByPage[currentPage]?.isNotEmpty() == true) -> {
+                strokesByPage = strokesByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
+            }
+
+            (highlightsByPage[currentPage]?.isNotEmpty() == true) -> {
+                highlightsByPage = highlightsByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
+            }
+        }
     }
 
     val transformState = rememberTransformableState { zoomChange, panChange, _ ->
@@ -494,7 +528,7 @@ private fun PdfReaderScreen() {
     }
 
     @Composable
-    fun ActionControlsSection(vertical: Boolean = false) {
+    fun ActionControlsSection(vertical: Boolean = false, showDockToggle: Boolean = false) {
         val palette = listOf(
             0xFF000000,
             0xFFE53935,
@@ -617,28 +651,7 @@ private fun PdfReaderScreen() {
             ) { Text(if (isEraserMode) "🧽✓" else "🧽") }
 
             Button(
-                onClick = {
-                    when {
-                        isDrawingMode && (strokesByPage[currentPage]?.isNotEmpty() == true) -> {
-                            strokesByPage = strokesByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
-                        }
-                        isShapeMode && (shapesByPage[currentPage]?.isNotEmpty() == true) -> {
-                            shapesByPage = shapesByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
-                        }
-                        isHighlightMode && (highlightsByPage[currentPage]?.isNotEmpty() == true) -> {
-                            highlightsByPage = highlightsByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
-                        }
-                        (shapesByPage[currentPage]?.isNotEmpty() == true) -> {
-                            shapesByPage = shapesByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
-                        }
-                        (strokesByPage[currentPage]?.isNotEmpty() == true) -> {
-                            strokesByPage = strokesByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
-                        }
-                        (highlightsByPage[currentPage]?.isNotEmpty() == true) -> {
-                            highlightsByPage = highlightsByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
-                        }
-                    }
-                },
+                onClick = undoLastAnnotation,
                 enabled = !isContinuousMode && (
                     (highlightsByPage[currentPage]?.isNotEmpty() == true) ||
                         (strokesByPage[currentPage]?.isNotEmpty() == true) ||
@@ -709,6 +722,17 @@ private fun PdfReaderScreen() {
                     saveNightModePreference(context, isNightMode)
                 }
             ) { Text(if (isNightMode) "☀" else "🌙") }
+
+            if (showDockToggle) {
+                Button(
+                    onClick = {
+                        isToolbarDockedLeft = !isToolbarDockedLeft
+                        saveToolbarDockPreference(context, isToolbarDockedLeft)
+                    }
+                ) {
+                    Text(if (isToolbarDockedLeft) "📌" else "🪟")
+                }
+            }
         }
 
         if (vertical) {
@@ -1372,6 +1396,38 @@ private fun PdfReaderScreen() {
                 .fillMaxSize()
                 .padding(paddingValues)
                 .padding(12.dp)
+                .onPreviewKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+
+                    when {
+                        event.isCtrlPressed && event.key == Key.Z -> {
+                            undoLastAnnotation()
+                            true
+                        }
+
+                        event.key == Key.DirectionLeft -> {
+                            if (!isContinuousMode) goToPreviousPage()
+                            true
+                        }
+
+                        event.key == Key.DirectionRight -> {
+                            if (!isContinuousMode) goToNextPage()
+                            true
+                        }
+
+                        event.key == Key.Plus || event.key == Key.Equals -> {
+                            zoom = (zoom * 1.1f).coerceIn(1f, 4f)
+                            true
+                        }
+
+                        event.key == Key.Minus -> {
+                            zoom = (zoom / 1.1f).coerceIn(1f, 4f)
+                            true
+                        }
+
+                        else -> false
+                    }
+                }
         ) {
             val isTabletLayout = maxWidth >= 900.dp
 
@@ -1387,7 +1443,11 @@ private fun PdfReaderScreen() {
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         RecentLibrarySection()
-                        ActionControlsSection(vertical = true)
+                        if (isToolbarDockedLeft) {
+                            ActionControlsSection(vertical = true, showDockToggle = true)
+                        } else {
+                            ActionControlsSection(vertical = false, showDockToggle = true)
+                        }
                         Text(
                             text = if (pdfSession == null) {
                                 "No document selected"
@@ -1455,6 +1515,16 @@ private fun PdfReaderScreen() {
                             DrawingOverlaySection(
                                 modifier = Modifier.fillMaxSize()
                             )
+
+                            if (!isToolbarDockedLeft) {
+                                Card(
+                                    modifier = Modifier
+                                        .align(Alignment.TopStart)
+                                        .padding(8.dp)
+                                ) {
+                                    ActionControlsSection(vertical = false, showDockToggle = true)
+                                }
+                            }
                         }
                     }
                 }
@@ -1472,7 +1542,7 @@ private fun PdfReaderScreen() {
                                 .fillMaxHeight(),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            ActionControlsSection(vertical = true)
+                            ActionControlsSection(vertical = true, showDockToggle = false)
                         }
 
                         Column(
@@ -1521,7 +1591,7 @@ private fun PdfReaderScreen() {
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         RecentLibrarySection()
-                        ActionControlsSection(vertical = false)
+                        ActionControlsSection(vertical = false, showDockToggle = false)
                         Text(
                             text = if (pdfSession == null) {
                                 "No document selected"
@@ -1770,6 +1840,16 @@ private fun loadContinuousModePreference(context: android.content.Context): Bool
 private fun saveContinuousModePreference(context: android.content.Context, enabled: Boolean) {
     val prefs = context.getSharedPreferences("pdf_reader_prefs", android.content.Context.MODE_PRIVATE)
     prefs.edit().putBoolean("continuous_mode_enabled", enabled).apply()
+}
+
+private fun loadToolbarDockPreference(context: android.content.Context): Boolean {
+    val prefs = context.getSharedPreferences("pdf_reader_prefs", android.content.Context.MODE_PRIVATE)
+    return prefs.getBoolean("toolbar_docked_left", true)
+}
+
+private fun saveToolbarDockPreference(context: android.content.Context, enabled: Boolean) {
+    val prefs = context.getSharedPreferences("pdf_reader_prefs", android.content.Context.MODE_PRIVATE)
+    prefs.edit().putBoolean("toolbar_docked_left", enabled).apply()
 }
 
 private fun upsertRecentDocument(
