@@ -46,6 +46,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -239,6 +240,8 @@ private fun PdfReaderScreen() {
     var drawingColor by remember { mutableStateOf(0xFF000000) }  // Black
     var isEraserMode by remember { mutableStateOf(false) }
     var isStylusActive by remember { mutableStateOf(false) }
+    var isPalmRejectionEnabled by remember { mutableStateOf(true) }
+    var lastStylusEventTimeMs by remember { mutableStateOf(0L) }
     var isShapeMode by remember { mutableStateOf(false) }
     var selectedShapeType by remember { mutableStateOf(ShapeType.RECTANGLE) }
     var shapesByPage by remember { mutableStateOf<Map<Int, List<ShapeAnnotation>>>(emptyMap()) }
@@ -492,28 +495,29 @@ private fun PdfReaderScreen() {
     }
 
     @Composable
-    fun ActionControlsSection() {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Button(onClick = { openDocumentLauncher.launch(arrayOf("application/pdf")) }) {
-                Text("Open PDF")
-            }
+    fun ActionControlsSection(vertical: Boolean = false) {
+        val palette = listOf(
+            0xFF000000,
+            0xFFE53935,
+            0xFF1E88E5,
+            0xFF43A047,
+            0xFF8E24AA
+        )
+
+        @Composable
+        fun ButtonsContent() {
+            Button(onClick = { openDocumentLauncher.launch(arrayOf("application/pdf")) }) { Text("📂") }
+
             Button(
                 onClick = goToPreviousPage,
                 enabled = !isContinuousMode && currentPage > 0 && pdfSession != null
-            ) {
-                Text("Previous")
-            }
+            ) { Text("⬅") }
+
             Button(
                 onClick = goToNextPage,
                 enabled = !isContinuousMode && pdfSession != null && currentPage < ((pdfSession?.renderer?.pageCount ?: 1) - 1)
-            ) {
-                Text("Next")
-            }
+            ) { Text("➡") }
+
             Button(
                 onClick = {
                     if (isTextSelectionMode) {
@@ -529,9 +533,7 @@ private fun PdfReaderScreen() {
                     scope.launch {
                         try {
                             val boxes = extractPageCharBoxes(context, uri, currentPage)
-                            textBoxesByPage = textBoxesByPage.toMutableMap().apply {
-                                put(currentPage, boxes)
-                            }
+                            textBoxesByPage = textBoxesByPage.toMutableMap().apply { put(currentPage, boxes) }
                             isTextSelectionMode = true
                             isHighlightMode = false
                             isDrawingMode = false
@@ -546,14 +548,9 @@ private fun PdfReaderScreen() {
                 },
                 enabled = pdfSession != null && !isExtractingText
             ) {
-                Text(
-                    when {
-                        isExtractingText -> "Text..."
-                        isTextSelectionMode -> "Text ON"
-                        else -> "Text"
-                    }
-                )
+                Text(if (isTextSelectionMode) "T✓" else "T")
             }
+
             Button(
                 onClick = {
                     if (!isContinuousMode) {
@@ -566,9 +563,8 @@ private fun PdfReaderScreen() {
                     }
                 },
                 enabled = pdfSession != null && !isContinuousMode
-            ) {
-                Text(if (isHighlightMode) "Highlight ON" else "Highlight")
-            }
+            ) { Text(if (isHighlightMode) "🖍✓" else "🖍") }
+
             Button(
                 onClick = {
                     if (!isContinuousMode) {
@@ -581,9 +577,8 @@ private fun PdfReaderScreen() {
                     }
                 },
                 enabled = pdfSession != null && !isContinuousMode
-            ) {
-                Text(if (isDrawingMode) "Draw ON" else "Draw")
-            }
+            ) { Text(if (isDrawingMode) "✍✓" else "✍") }
+
             Button(
                 onClick = {
                     if (!isContinuousMode) {
@@ -596,9 +591,8 @@ private fun PdfReaderScreen() {
                     }
                 },
                 enabled = pdfSession != null && !isContinuousMode
-            ) {
-                Text(if (isShapeMode) "Shape ON" else "Shape")
-            }
+            ) { Text(if (isShapeMode) "▭✓" else "▭") }
+
             Button(
                 onClick = {
                     selectedShapeType = when (selectedShapeType) {
@@ -611,57 +605,38 @@ private fun PdfReaderScreen() {
             ) {
                 Text(
                     when (selectedShapeType) {
-                        ShapeType.RECTANGLE -> "Rect"
-                        ShapeType.ELLIPSE -> "Ellipse"
-                        ShapeType.ARROW -> "Arrow"
+                        ShapeType.RECTANGLE -> "▭"
+                        ShapeType.ELLIPSE -> "◯"
+                        ShapeType.ARROW -> "↗"
                     }
                 )
             }
+
             Button(
-                onClick = {
-                    isEraserMode = !isEraserMode
-                },
+                onClick = { isEraserMode = !isEraserMode },
                 enabled = pdfSession != null && isDrawingMode && !isContinuousMode
-            ) {
-                Text(if (isEraserMode) "Eraser ON" else "Eraser")
-            }
+            ) { Text(if (isEraserMode) "⌫✓" else "⌫") }
+
             Button(
                 onClick = {
                     when {
                         isDrawingMode && (strokesByPage[currentPage]?.isNotEmpty() == true) -> {
-                            strokesByPage = strokesByPage.toMutableMap().apply {
-                                put(currentPage, getValue(currentPage).dropLast(1))
-                            }
+                            strokesByPage = strokesByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
                         }
-
                         isShapeMode && (shapesByPage[currentPage]?.isNotEmpty() == true) -> {
-                            shapesByPage = shapesByPage.toMutableMap().apply {
-                                put(currentPage, getValue(currentPage).dropLast(1))
-                            }
+                            shapesByPage = shapesByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
                         }
-
                         isHighlightMode && (highlightsByPage[currentPage]?.isNotEmpty() == true) -> {
-                            highlightsByPage = highlightsByPage.toMutableMap().apply {
-                                put(currentPage, getValue(currentPage).dropLast(1))
-                            }
+                            highlightsByPage = highlightsByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
                         }
-
                         (shapesByPage[currentPage]?.isNotEmpty() == true) -> {
-                            shapesByPage = shapesByPage.toMutableMap().apply {
-                                put(currentPage, getValue(currentPage).dropLast(1))
-                            }
+                            shapesByPage = shapesByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
                         }
-
                         (strokesByPage[currentPage]?.isNotEmpty() == true) -> {
-                            strokesByPage = strokesByPage.toMutableMap().apply {
-                                put(currentPage, getValue(currentPage).dropLast(1))
-                            }
+                            strokesByPage = strokesByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
                         }
-
                         (highlightsByPage[currentPage]?.isNotEmpty() == true) -> {
-                            highlightsByPage = highlightsByPage.toMutableMap().apply {
-                                put(currentPage, getValue(currentPage).dropLast(1))
-                            }
+                            highlightsByPage = highlightsByPage.toMutableMap().apply { put(currentPage, getValue(currentPage).dropLast(1)) }
                         }
                     }
                 },
@@ -670,39 +645,49 @@ private fun PdfReaderScreen() {
                         (strokesByPage[currentPage]?.isNotEmpty() == true) ||
                         (shapesByPage[currentPage]?.isNotEmpty() == true)
                     )
-            ) {
-                Text("Undo")
+            ) { Text("↶") }
+
+            Button(enabled = false, onClick = {}) { Text("↷") }
+
+            Button(
+                onClick = { isPalmRejectionEnabled = !isPalmRejectionEnabled },
+                enabled = pdfSession != null && isDrawingMode && !isContinuousMode
+            ) { Text(if (isPalmRejectionEnabled) "✋✓" else "✋") }
+
+            if (isDrawingMode && !isContinuousMode) {
+                palette.forEach { colorValue ->
+                    Button(
+                        onClick = { drawingColor = colorValue },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ComposeColor(colorValue)
+                        )
+                    ) {
+                        Text(if (drawingColor == colorValue) "●" else "○", color = ComposeColor.White)
+                    }
+                }
             }
+
             Button(
                 onClick = {
-                    highlightsByPage = highlightsByPage.toMutableMap().apply {
-                        remove(currentPage)
-                    }
+                    highlightsByPage = highlightsByPage.toMutableMap().apply { remove(currentPage) }
                 },
                 enabled = !isContinuousMode && (highlightsByPage[currentPage]?.isNotEmpty() == true)
-            ) {
-                Text("Clear")
-            }
+            ) { Text("CLR-H") }
+
             Button(
                 onClick = {
-                    strokesByPage = strokesByPage.toMutableMap().apply {
-                        remove(currentPage)
-                    }
+                    strokesByPage = strokesByPage.toMutableMap().apply { remove(currentPage) }
                 },
                 enabled = !isContinuousMode && (strokesByPage[currentPage]?.isNotEmpty() == true)
-            ) {
-                Text("Clear Strokes")
-            }
+            ) { Text("CLR-D") }
+
             Button(
                 onClick = {
-                    shapesByPage = shapesByPage.toMutableMap().apply {
-                        remove(currentPage)
-                    }
+                    shapesByPage = shapesByPage.toMutableMap().apply { remove(currentPage) }
                 },
                 enabled = !isContinuousMode && (shapesByPage[currentPage]?.isNotEmpty() == true)
-            ) {
-                Text("Clear Shapes")
-            }
+            ) { Text("CLR-S") }
+
             Button(
                 onClick = {
                     isContinuousMode = !isContinuousMode
@@ -717,16 +702,33 @@ private fun PdfReaderScreen() {
                         offsetY = 0f
                     }
                 }
-            ) {
-                Text(if (isContinuousMode) "Page Mode" else "Scroll Mode")
-            }
+            ) { Text(if (isContinuousMode) "📄" else "📜") }
+
             Button(
                 onClick = {
                     isNightMode = !isNightMode
                     saveNightModePreference(context, isNightMode)
                 }
+            ) { Text(if (isNightMode) "☀" else "🌙") }
+        }
+
+        if (vertical) {
+            Column(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(if (isNightMode) "Light" else "Night")
+                ButtonsContent()
+            }
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ButtonsContent()
             }
         }
     }
@@ -974,6 +976,19 @@ private fun PdfReaderScreen() {
                         modifier = Modifier.fillMaxSize()
                     )
 
+                    val pageStrokes = strokesByPage[currentPage].orEmpty()
+                    if (pageStrokes.isNotEmpty()) {
+                        val strokesBitmap = remember(pageStrokes, viewerSize) {
+                            renderStrokesToBitmap(viewerSize.width, viewerSize.height, pageStrokes)
+                        }
+                        Image(
+                            bitmap = strokesBitmap.asImageBitmap(),
+                            contentDescription = "Stroke annotations",
+                            contentScale = ContentScale.FillBounds,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         highlightsByPage[currentPage].orEmpty().forEach { region ->
                             val left = region.leftFrac * size.width
@@ -1109,16 +1124,25 @@ private fun PdfReaderScreen() {
                     if (!isDrawingMode) return@pointerInteropFilter false
 
                     val stylusIndex = findStylusPointerIndex(event)
+                    val nowMs = event.eventTime
+                    if (stylusIndex != -1) {
+                        lastStylusEventTimeMs = nowMs
+                    }
+
+                    val stylusRecentlyActive = (nowMs - lastStylusEventTimeMs) <= 1500L
                     val activePointerIndex = when {
                         stylusIndex != -1 -> stylusIndex
-                        isStylusActive -> -1 // Palm rejection while stylus session active
+                        isPalmRejectionEnabled && (isStylusActive || stylusRecentlyActive) -> -1
                         else -> event.actionIndex.coerceIn(0, event.pointerCount - 1)
                     }
 
                     when (event.actionMasked) {
                         MotionEvent.ACTION_DOWN,
                         MotionEvent.ACTION_POINTER_DOWN -> {
-                            if (stylusIndex != -1) isStylusActive = true
+                            if (stylusIndex != -1) {
+                                isStylusActive = true
+                                lastStylusEventTimeMs = nowMs
+                            }
                             if (activePointerIndex == -1) return@pointerInteropFilter true
 
                             currentStrokePoints = listOf(
@@ -1183,20 +1207,6 @@ private fun PdfReaderScreen() {
                     true
                 }
         ) {
-            // Render completed strokes from this page
-            val pageStrokes = strokesByPage[currentPage] ?: emptyList()
-            if (pageStrokes.isNotEmpty()) {
-                val bitmap = remember(pageStrokes) {
-                    renderStrokesToBitmap(viewerSize.width, viewerSize.height, pageStrokes)
-                }
-                Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.FillBounds
-                )
-            }
-
             // Render current stroke being drawn
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val previewPath = buildSmoothComposePath(currentStrokePoints)
@@ -1325,7 +1335,7 @@ private fun PdfReaderScreen() {
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         RecentLibrarySection()
-                        ActionControlsSection()
+                        ActionControlsSection(vertical = true)
                         Text(
                             text = if (pdfSession == null) {
                                 "No document selected"
@@ -1397,67 +1407,125 @@ private fun PdfReaderScreen() {
                     }
                 }
             } else {
-                Column(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    RecentLibrarySection()
-                    ActionControlsSection()
-                    Text(
-                        text = if (pdfSession == null) {
-                            "No document selected"
-                        } else {
+                val isLandscape = maxWidth > maxHeight
+
+                if (isLandscape) {
+                    Row(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .width(96.dp)
+                                .fillMaxHeight(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ActionControlsSection(vertical = true)
+                        }
+
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            RecentLibrarySection()
+                            Text(
+                                text = if (pdfSession == null) {
+                                    "No document selected"
+                                } else {
+                                    if (isContinuousMode) {
+                                        "Continuous • Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
+                                    } else {
+                                        "Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
+                                    }
+                                }
+                            )
+
+                            when {
+                                isHighlightMode -> Text("Highlight mode", color = MaterialTheme.colorScheme.primary)
+                                isDrawingMode -> Text("Draw mode", color = MaterialTheme.colorScheme.primary)
+                                isShapeMode -> Text("Shape mode", color = MaterialTheme.colorScheme.primary)
+                                isTextSelectionMode -> Text("Text mode", color = MaterialTheme.colorScheme.primary)
+                            }
+
+                            if (errorMessage != null) {
+                                Text(text = errorMessage!!, color = MaterialTheme.colorScheme.error)
+                            }
+
                             if (isContinuousMode) {
-                                "Continuous • Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
+                                ContinuousViewerSection(modifier = Modifier.weight(1f))
                             } else {
-                                "Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
+                                Box(modifier = Modifier.weight(1f)) {
+                                    ViewerSection(modifier = Modifier.fillMaxSize())
+                                    DrawingOverlaySection(modifier = Modifier.fillMaxSize())
+                                }
                             }
                         }
-                    )
-
-                    when {
-                        isHighlightMode -> Text(
-                            text = "Highlight mode: drag on page to mark areas",
-                            color = MaterialTheme.colorScheme.primary
-                        )
-
-                        isDrawingMode -> Text(
-                            text = "Draw mode: write with finger or stylus",
-                            color = MaterialTheme.colorScheme.primary
-                        )
-
-                        isShapeMode -> Text(
-                            text = "Shape mode: drag to place ${selectedShapeType.name.lowercase()}",
-                            color = MaterialTheme.colorScheme.primary
-                        )
-
-                        isTextSelectionMode -> Text(
-                            text = "Text mode: long-press then drag handles",
-                            color = MaterialTheme.colorScheme.primary
-                        )
                     }
-
-                    if (errorMessage != null) {
-                        Text(text = errorMessage!!, color = MaterialTheme.colorScheme.error)
-                    }
-
-                    if (lastRenderMs != null) {
+                } else {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        RecentLibrarySection()
+                        ActionControlsSection(vertical = false)
                         Text(
-                            text = if (lastRenderMs == 0L) {
-                                "Render cache: hit"
+                            text = if (pdfSession == null) {
+                                "No document selected"
                             } else {
-                                "Render time: ${lastRenderMs} ms"
-                            },
-                            style = MaterialTheme.typography.bodySmall
+                                if (isContinuousMode) {
+                                    "Continuous • Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
+                                } else {
+                                    "Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
+                                }
+                            }
                         )
-                    }
 
-                    if (isContinuousMode) {
-                        ContinuousViewerSection(modifier = Modifier.weight(1f))
-                    } else {
-                        Box(modifier = Modifier.weight(1f)) {
-                            ViewerSection(modifier = Modifier.fillMaxSize())
-                            DrawingOverlaySection(modifier = Modifier.fillMaxSize())
+                        when {
+                            isHighlightMode -> Text(
+                                text = "Highlight mode: drag on page to mark areas",
+                                color = MaterialTheme.colorScheme.primary
+                            )
+
+                            isDrawingMode -> Text(
+                                text = "Draw mode: write with finger or stylus",
+                                color = MaterialTheme.colorScheme.primary
+                            )
+
+                            isShapeMode -> Text(
+                                text = "Shape mode: drag to place ${selectedShapeType.name.lowercase()}",
+                                color = MaterialTheme.colorScheme.primary
+                            )
+
+                            isTextSelectionMode -> Text(
+                                text = "Text mode: long-press then drag handles",
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        if (errorMessage != null) {
+                            Text(text = errorMessage!!, color = MaterialTheme.colorScheme.error)
+                        }
+
+                        if (lastRenderMs != null) {
+                            Text(
+                                text = if (lastRenderMs == 0L) {
+                                    "Render cache: hit"
+                                } else {
+                                    "Render time: ${lastRenderMs} ms"
+                                },
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+
+                        if (isContinuousMode) {
+                            ContinuousViewerSection(modifier = Modifier.weight(1f))
+                        } else {
+                            Box(modifier = Modifier.weight(1f)) {
+                                ViewerSection(modifier = Modifier.fillMaxSize())
+                                DrawingOverlaySection(modifier = Modifier.fillMaxSize())
+                            }
                         }
                     }
                 }
