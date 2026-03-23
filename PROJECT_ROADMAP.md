@@ -607,7 +607,7 @@ data class TextBox(val rect: Rect, val text: String)
 - [x] **MB.1** - Stylus detection and palm rejection
 - [x] **MB.2** - Low-latency freehand drawing
 - [x] **MB.3** - Pressure sensitivity support
-- [ ] **MB.4** - Shape tools (rectangles, circles, arrows)
+- [x] **MB.4** - Shape tools (rectangles, circles, arrows)
 - [ ] **MB.5** - Eraser tool
 - [ ] **MB.6** - Dual-pane tablet layout
 - [ ] **MB.7** - Page reordering (drag-and-drop)

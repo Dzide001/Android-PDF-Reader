@@ -129,6 +129,22 @@ private data class TextCharBox(
     val bottomFrac: Float
 )
 
+private enum class ShapeType {
+    RECTANGLE,
+    ELLIPSE,
+    ARROW
+}
+
+private data class ShapeAnnotation(
+    val type: ShapeType,
+    val leftFrac: Float,
+    val topFrac: Float,
+    val rightFrac: Float,
+    val bottomFrac: Float,
+    val color: Long = 0xFFE53935,
+    val strokeWidthPx: Float = 3f
+)
+
 private enum class TextHandleDrag {
     START,
     END
@@ -223,6 +239,11 @@ private fun PdfReaderScreen() {
     var drawingColor by remember { mutableStateOf(0xFF000000) }  // Black
     var isEraserMode by remember { mutableStateOf(false) }
     var isStylusActive by remember { mutableStateOf(false) }
+    var isShapeMode by remember { mutableStateOf(false) }
+    var selectedShapeType by remember { mutableStateOf(ShapeType.RECTANGLE) }
+    var shapesByPage by remember { mutableStateOf<Map<Int, List<ShapeAnnotation>>>(emptyMap()) }
+    var shapeDragStart by remember { mutableStateOf<Offset?>(null) }
+    var shapeDragCurrent by remember { mutableStateOf<Offset?>(null) }
 
     // True on-page text selection state (Adobe-style handles)
     var isTextSelectionMode by remember { mutableStateOf(false) }
@@ -396,6 +417,8 @@ private fun PdfReaderScreen() {
         offsetY = 0f
         selectedTextRange = null
         activeTextHandle = null
+        shapeDragStart = null
+        shapeDragCurrent = null
     }
 
     @Composable
@@ -512,6 +535,7 @@ private fun PdfReaderScreen() {
                             isTextSelectionMode = true
                             isHighlightMode = false
                             isDrawingMode = false
+                            isShapeMode = false
                             selectedTextRange = null
                         } catch (e: Exception) {
                             errorMessage = e.message ?: "Failed to prepare page text selection"
@@ -537,6 +561,7 @@ private fun PdfReaderScreen() {
                         if (isHighlightMode) {
                             isDrawingMode = false
                             isTextSelectionMode = false
+                            isShapeMode = false
                         }
                     }
                 },
@@ -551,6 +576,7 @@ private fun PdfReaderScreen() {
                         if (isDrawingMode) {
                             isHighlightMode = false
                             isTextSelectionMode = false
+                            isShapeMode = false
                         }
                     }
                 },
@@ -560,11 +586,92 @@ private fun PdfReaderScreen() {
             }
             Button(
                 onClick = {
+                    if (!isContinuousMode) {
+                        isShapeMode = !isShapeMode
+                        if (isShapeMode) {
+                            isDrawingMode = false
+                            isHighlightMode = false
+                            isTextSelectionMode = false
+                        }
+                    }
+                },
+                enabled = pdfSession != null && !isContinuousMode
+            ) {
+                Text(if (isShapeMode) "Shape ON" else "Shape")
+            }
+            Button(
+                onClick = {
+                    selectedShapeType = when (selectedShapeType) {
+                        ShapeType.RECTANGLE -> ShapeType.ELLIPSE
+                        ShapeType.ELLIPSE -> ShapeType.ARROW
+                        ShapeType.ARROW -> ShapeType.RECTANGLE
+                    }
+                },
+                enabled = pdfSession != null && isShapeMode && !isContinuousMode
+            ) {
+                Text(
+                    when (selectedShapeType) {
+                        ShapeType.RECTANGLE -> "Rect"
+                        ShapeType.ELLIPSE -> "Ellipse"
+                        ShapeType.ARROW -> "Arrow"
+                    }
+                )
+            }
+            Button(
+                onClick = {
                     isEraserMode = !isEraserMode
                 },
                 enabled = pdfSession != null && isDrawingMode && !isContinuousMode
             ) {
                 Text(if (isEraserMode) "Eraser ON" else "Eraser")
+            }
+            Button(
+                onClick = {
+                    when {
+                        isDrawingMode && (strokesByPage[currentPage]?.isNotEmpty() == true) -> {
+                            strokesByPage = strokesByPage.toMutableMap().apply {
+                                put(currentPage, getValue(currentPage).dropLast(1))
+                            }
+                        }
+
+                        isShapeMode && (shapesByPage[currentPage]?.isNotEmpty() == true) -> {
+                            shapesByPage = shapesByPage.toMutableMap().apply {
+                                put(currentPage, getValue(currentPage).dropLast(1))
+                            }
+                        }
+
+                        isHighlightMode && (highlightsByPage[currentPage]?.isNotEmpty() == true) -> {
+                            highlightsByPage = highlightsByPage.toMutableMap().apply {
+                                put(currentPage, getValue(currentPage).dropLast(1))
+                            }
+                        }
+
+                        (shapesByPage[currentPage]?.isNotEmpty() == true) -> {
+                            shapesByPage = shapesByPage.toMutableMap().apply {
+                                put(currentPage, getValue(currentPage).dropLast(1))
+                            }
+                        }
+
+                        (strokesByPage[currentPage]?.isNotEmpty() == true) -> {
+                            strokesByPage = strokesByPage.toMutableMap().apply {
+                                put(currentPage, getValue(currentPage).dropLast(1))
+                            }
+                        }
+
+                        (highlightsByPage[currentPage]?.isNotEmpty() == true) -> {
+                            highlightsByPage = highlightsByPage.toMutableMap().apply {
+                                put(currentPage, getValue(currentPage).dropLast(1))
+                            }
+                        }
+                    }
+                },
+                enabled = !isContinuousMode && (
+                    (highlightsByPage[currentPage]?.isNotEmpty() == true) ||
+                        (strokesByPage[currentPage]?.isNotEmpty() == true) ||
+                        (shapesByPage[currentPage]?.isNotEmpty() == true)
+                    )
+            ) {
+                Text("Undo")
             }
             Button(
                 onClick = {
@@ -588,11 +695,22 @@ private fun PdfReaderScreen() {
             }
             Button(
                 onClick = {
+                    shapesByPage = shapesByPage.toMutableMap().apply {
+                        remove(currentPage)
+                    }
+                },
+                enabled = !isContinuousMode && (shapesByPage[currentPage]?.isNotEmpty() == true)
+            ) {
+                Text("Clear Shapes")
+            }
+            Button(
+                onClick = {
                     isContinuousMode = !isContinuousMode
                     saveContinuousModePreference(context, isContinuousMode)
                     if (isContinuousMode) {
                         isHighlightMode = false
                         isDrawingMode = false
+                        isShapeMode = false
                         isTextSelectionMode = false
                         zoom = 1f
                         offsetX = 0f
@@ -647,10 +765,10 @@ private fun PdfReaderScreen() {
                         }
                         .transformable(
                             state = transformState,
-                            enabled = !isHighlightMode && !isDrawingMode && !isTextSelectionMode
+                            enabled = !isHighlightMode && !isDrawingMode && !isShapeMode && !isTextSelectionMode
                         )
-                        .pointerInput(isHighlightMode, isDrawingMode, isTextSelectionMode, zoom) {
-                            if (isHighlightMode || isDrawingMode || isTextSelectionMode || zoom > 1.05f) return@pointerInput
+                        .pointerInput(isHighlightMode, isDrawingMode, isShapeMode, isTextSelectionMode, zoom) {
+                            if (isHighlightMode || isDrawingMode || isShapeMode || isTextSelectionMode || zoom > 1.05f) return@pointerInput
                             var dragDistance = 0f
                             detectHorizontalDragGestures(
                                 onHorizontalDrag = { change, dragAmount ->
@@ -669,8 +787,8 @@ private fun PdfReaderScreen() {
                                 }
                             )
                         }
-                        .pointerInput(isHighlightMode, isDrawingMode, isTextSelectionMode, zoom) {
-                            if (isHighlightMode || isDrawingMode || isTextSelectionMode || zoom > 1.05f) return@pointerInput
+                        .pointerInput(isHighlightMode, isDrawingMode, isShapeMode, isTextSelectionMode, zoom) {
+                            if (isHighlightMode || isDrawingMode || isShapeMode || isTextSelectionMode || zoom > 1.05f) return@pointerInput
                             detectTapGestures { tapOffset ->
                                 val width = viewerSize.width.toFloat().coerceAtLeast(1f)
                                 val leftZone = width * 0.25f
@@ -681,8 +799,8 @@ private fun PdfReaderScreen() {
                                 }
                             }
                         }
-                        .pointerInput(isHighlightMode, isDrawingMode, isTextSelectionMode, currentPage, viewerSize) {
-                            if (!isHighlightMode || isDrawingMode || isTextSelectionMode) return@pointerInput
+                        .pointerInput(isHighlightMode, isDrawingMode, isShapeMode, isTextSelectionMode, currentPage, viewerSize) {
+                            if (!isHighlightMode || isDrawingMode || isShapeMode || isTextSelectionMode) return@pointerInput
                             detectDragGestures(
                                 onDragStart = { offset ->
                                     dragStart = offset
@@ -722,6 +840,53 @@ private fun PdfReaderScreen() {
                                 },
                                 onDrag = { change, _ ->
                                     dragCurrent = change.position
+                                    change.consume()
+                                }
+                            )
+                        }
+                        .pointerInput(isShapeMode, currentPage, viewerSize, selectedShapeType) {
+                            if (!isShapeMode) return@pointerInput
+                            detectDragGestures(
+                                onDragStart = { offset ->
+                                    shapeDragStart = offset
+                                    shapeDragCurrent = offset
+                                },
+                                onDragCancel = {
+                                    shapeDragStart = null
+                                    shapeDragCurrent = null
+                                },
+                                onDragEnd = {
+                                    val start = shapeDragStart
+                                    val end = shapeDragCurrent
+                                    val width = viewerSize.width.toFloat().coerceAtLeast(1f)
+                                    val height = viewerSize.height.toFloat().coerceAtLeast(1f)
+
+                                    if (start != null && end != null) {
+                                        val left = minOf(start.x, end.x).coerceIn(0f, width)
+                                        val top = minOf(start.y, end.y).coerceIn(0f, height)
+                                        val right = maxOf(start.x, end.x).coerceIn(0f, width)
+                                        val bottom = maxOf(start.y, end.y).coerceIn(0f, height)
+
+                                        if ((right - left) > 8f && (bottom - top) > 8f) {
+                                            val annotation = ShapeAnnotation(
+                                                type = selectedShapeType,
+                                                leftFrac = left / width,
+                                                topFrac = top / height,
+                                                rightFrac = right / width,
+                                                bottomFrac = bottom / height
+                                            )
+                                            val existing = shapesByPage[currentPage].orEmpty()
+                                            shapesByPage = shapesByPage.toMutableMap().apply {
+                                                put(currentPage, existing + annotation)
+                                            }
+                                        }
+                                    }
+
+                                    shapeDragStart = null
+                                    shapeDragCurrent = null
+                                },
+                                onDrag = { change, _ ->
+                                    shapeDragCurrent = change.position
                                     change.consume()
                                 }
                             )
@@ -822,6 +987,10 @@ private fun PdfReaderScreen() {
                             )
                         }
 
+                        shapesByPage[currentPage].orEmpty().forEach { shape ->
+                            drawShapeAnnotation(shape)
+                        }
+
                         val start = dragStart
                         val end = dragCurrent
                         if (start != null && end != null) {
@@ -834,6 +1003,21 @@ private fun PdfReaderScreen() {
                                 topLeft = Offset(left, top),
                                 size = Size(width, height)
                             )
+                        }
+
+                        val shapeStart = shapeDragStart
+                        val shapeEnd = shapeDragCurrent
+                        if (isShapeMode && shapeStart != null && shapeEnd != null) {
+                            val preview = ShapeAnnotation(
+                                type = selectedShapeType,
+                                leftFrac = (minOf(shapeStart.x, shapeEnd.x) / size.width.coerceAtLeast(1f)).coerceIn(0f, 1f),
+                                topFrac = (minOf(shapeStart.y, shapeEnd.y) / size.height.coerceAtLeast(1f)).coerceIn(0f, 1f),
+                                rightFrac = (maxOf(shapeStart.x, shapeEnd.x) / size.width.coerceAtLeast(1f)).coerceIn(0f, 1f),
+                                bottomFrac = (maxOf(shapeStart.y, shapeEnd.y) / size.height.coerceAtLeast(1f)).coerceIn(0f, 1f),
+                                color = 0xFF1E88E5,
+                                strokeWidthPx = 2.5f
+                            )
+                            drawShapeAnnotation(preview)
                         }
 
                         if (isTextSelectionMode) {
@@ -1154,9 +1338,24 @@ private fun PdfReaderScreen() {
                             }
                         )
 
-                        if (isHighlightMode) {
-                            Text(
+                        when {
+                            isHighlightMode -> Text(
                                 text = "Highlight mode: drag on page to mark areas",
+                                color = MaterialTheme.colorScheme.primary
+                            )
+
+                            isDrawingMode -> Text(
+                                text = "Draw mode: write with finger or stylus",
+                                color = MaterialTheme.colorScheme.primary
+                            )
+
+                            isShapeMode -> Text(
+                                text = "Shape mode: drag to place ${selectedShapeType.name.lowercase()}",
+                                color = MaterialTheme.colorScheme.primary
+                            )
+
+                            isTextSelectionMode -> Text(
+                                text = "Text mode: long-press then drag handles",
                                 color = MaterialTheme.colorScheme.primary
                             )
                         }
@@ -1216,9 +1415,24 @@ private fun PdfReaderScreen() {
                         }
                     )
 
-                    if (isHighlightMode) {
-                        Text(
+                    when {
+                        isHighlightMode -> Text(
                             text = "Highlight mode: drag on page to mark areas",
+                            color = MaterialTheme.colorScheme.primary
+                        )
+
+                        isDrawingMode -> Text(
+                            text = "Draw mode: write with finger or stylus",
+                            color = MaterialTheme.colorScheme.primary
+                        )
+
+                        isShapeMode -> Text(
+                            text = "Shape mode: drag to place ${selectedShapeType.name.lowercase()}",
+                            color = MaterialTheme.colorScheme.primary
+                        )
+
+                        isTextSelectionMode -> Text(
+                            text = "Text mode: long-press then drag handles",
                             color = MaterialTheme.colorScheme.primary
                         )
                     }
@@ -1504,6 +1718,72 @@ private fun applyPanResistance(
     val softLimitY = maxY * 1.15f
 
     return resistedX.coerceIn(-softLimitX, softLimitX) to resistedY.coerceIn(-softLimitY, softLimitY)
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawShapeAnnotation(shape: ShapeAnnotation) {
+    val left = shape.leftFrac.coerceIn(0f, 1f) * size.width
+    val top = shape.topFrac.coerceIn(0f, 1f) * size.height
+    val right = shape.rightFrac.coerceIn(0f, 1f) * size.width
+    val bottom = shape.bottomFrac.coerceIn(0f, 1f) * size.height
+    val width = (right - left).coerceAtLeast(1f)
+    val height = (bottom - top).coerceAtLeast(1f)
+    val stroke = androidx.compose.ui.graphics.drawscope.Stroke(
+        width = shape.strokeWidthPx,
+        cap = androidx.compose.ui.graphics.StrokeCap.Round,
+        join = androidx.compose.ui.graphics.StrokeJoin.Round
+    )
+    val color = ComposeColor(shape.color)
+
+    when (shape.type) {
+        ShapeType.RECTANGLE -> {
+            drawRect(
+                color = color,
+                topLeft = Offset(left, top),
+                size = Size(width, height),
+                style = stroke
+            )
+        }
+
+        ShapeType.ELLIPSE -> {
+            drawOval(
+                color = color,
+                topLeft = Offset(left, top),
+                size = Size(width, height),
+                style = stroke
+            )
+        }
+
+        ShapeType.ARROW -> {
+            val start = Offset(left, top)
+            val end = Offset(right, bottom)
+            drawLine(
+                color = color,
+                start = start,
+                end = end,
+                strokeWidth = shape.strokeWidthPx
+            )
+
+            val dx = end.x - start.x
+            val dy = end.y - start.y
+            val len = hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(1f)
+            val ux = dx / len
+            val uy = dy / len
+            val headLength = 16f
+            val headSpread = 8f
+
+            val leftHead = Offset(
+                x = end.x - (ux * headLength) + (-uy * headSpread),
+                y = end.y - (uy * headLength) + (ux * headSpread)
+            )
+            val rightHead = Offset(
+                x = end.x - (ux * headLength) - (-uy * headSpread),
+                y = end.y - (uy * headLength) - (ux * headSpread)
+            )
+
+            drawLine(color = color, start = end, end = leftHead, strokeWidth = shape.strokeWidthPx)
+            drawLine(color = color, start = end, end = rightHead, strokeWidth = shape.strokeWidthPx)
+        }
+    }
 }
 
 private fun calculateStrokeWidth(pressure: Float, isEraser: Boolean = false): Float {
