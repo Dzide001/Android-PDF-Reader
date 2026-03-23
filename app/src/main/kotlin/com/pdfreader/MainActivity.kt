@@ -6,7 +6,9 @@ import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.provider.OpenableColumns
+import android.util.LruCache
 import org.json.JSONArray
 import org.json.JSONObject
 import androidx.activity.ComponentActivity
@@ -94,6 +96,30 @@ private data class RecentDocument(
     val isFavorite: Boolean
 )
 
+private class PageBitmapCache(maxEntries: Int) {
+    private val cache = object : LruCache<Int, Bitmap>(maxEntries) {
+        override fun entryRemoved(evicted: Boolean, key: Int, oldValue: Bitmap, newValue: Bitmap?) {
+            if (evicted && !oldValue.isRecycled) {
+                oldValue.recycle()
+            }
+        }
+    }
+
+    fun get(page: Int): Bitmap? = cache.get(page)
+
+    fun put(page: Int, bitmap: Bitmap) {
+        cache.put(page, bitmap)
+    }
+
+    fun clear() {
+        val snapshots = cache.snapshot().values
+        cache.evictAll()
+        snapshots.forEach { bmp ->
+            if (!bmp.isRecycled) bmp.recycle()
+        }
+    }
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -124,6 +150,7 @@ private fun PdfReaderScreen() {
 
     var pdfSession by remember { mutableStateOf<PdfSession?>(null) }
     var currentPdfUri by remember { mutableStateOf<Uri?>(null) }
+    val pageCache = remember(currentPdfUri) { PageBitmapCache(maxEntries = 8) }
     var recentDocuments by remember { mutableStateOf(loadRecentDocuments(context)) }
     var currentPage by remember { mutableIntStateOf(0) }
     var pageBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -140,6 +167,7 @@ private fun PdfReaderScreen() {
     var zoom by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
+    var lastRenderMs by remember { mutableStateOf<Long?>(null) }
 
     val transformState = rememberTransformableState { zoomChange, panChange, _ ->
         zoom = (zoom * zoomChange).coerceIn(1f, 4f)
@@ -162,7 +190,7 @@ private fun PdfReaderScreen() {
 
         try {
             pdfSession?.close()
-            pageBitmap?.recycle()
+            pageCache.clear()
             currentPage = 0
 
             val pfd = context.contentResolver.openFileDescriptor(uri, "r")
@@ -196,15 +224,42 @@ private fun PdfReaderScreen() {
 
     DisposableEffect(Unit) {
         onDispose {
-            pageBitmap?.recycle()
+            pageCache.clear()
             pdfSession?.close()
         }
     }
 
     LaunchedEffect(pdfSession, currentPage) {
         val session = pdfSession ?: return@LaunchedEffect
-        pageBitmap?.recycle()
-        pageBitmap = renderPageBitmap(session.renderer, currentPage)
+        val cached = pageCache.get(currentPage)
+        if (cached != null && !cached.isRecycled) {
+            pageBitmap = cached
+            lastRenderMs = 0L
+        } else {
+            val started = SystemClock.elapsedRealtime()
+            val rendered = renderPageBitmap(session.renderer, currentPage)
+            pageCache.put(currentPage, rendered)
+            pageBitmap = rendered
+            lastRenderMs = SystemClock.elapsedRealtime() - started
+        }
+
+        // Prefetch adjacent pages for faster navigation.
+        val pageCount = session.renderer.pageCount
+        val neighbors = listOf(currentPage - 1, currentPage + 1)
+            .filter { it in 0 until pageCount }
+            .filter { pageCache.get(it) == null }
+
+        neighbors.forEach { neighborPage ->
+            scope.launch(Dispatchers.Default) {
+                runCatching {
+                    val neighborBitmap = renderPageBitmap(session.renderer, neighborPage)
+                    withContext(Dispatchers.Main) {
+                        pageCache.put(neighborPage, neighborBitmap)
+                    }
+                }
+            }
+        }
+
         zoom = 1f
         offsetX = 0f
         offsetY = 0f
@@ -242,7 +297,7 @@ private fun PdfReaderScreen() {
                                         uriString = doc.uri,
                                         onOpened = { session, uri ->
                                             pdfSession?.close()
-                                            pageBitmap?.recycle()
+                                            pageCache.clear()
                                             currentPage = 0
                                             pdfSession = session
                                             currentPdfUri = uri
@@ -514,6 +569,17 @@ private fun PdfReaderScreen() {
                         if (errorMessage != null) {
                             Text(text = errorMessage!!, color = MaterialTheme.colorScheme.error)
                         }
+
+                        if (lastRenderMs != null) {
+                            Text(
+                                text = if (lastRenderMs == 0L) {
+                                    "Render cache: hit"
+                                } else {
+                                    "Render time: ${lastRenderMs} ms"
+                                },
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
                     }
 
                     ViewerSection(
@@ -546,6 +612,17 @@ private fun PdfReaderScreen() {
 
                     if (errorMessage != null) {
                         Text(text = errorMessage!!, color = MaterialTheme.colorScheme.error)
+                    }
+
+                    if (lastRenderMs != null) {
+                        Text(
+                            text = if (lastRenderMs == 0L) {
+                                "Render cache: hit"
+                            } else {
+                                "Render time: ${lastRenderMs} ms"
+                            },
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
 
                     ViewerSection(modifier = Modifier.weight(1f))

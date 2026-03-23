@@ -188,6 +188,9 @@ sudo apt-get install cmake openjdk-11-jdk-headless
 ```bash
 # Profile with CPU/Memory profiler in Android Studio
 # Or use: ./gradlew connectedCheck --no-daemon
+
+# Quick startup timing smoke test
+./scripts/perf-smoke.sh --runs 5
 ```
 
 ---
