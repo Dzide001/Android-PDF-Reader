@@ -96,6 +96,7 @@ import kotlinx.coroutines.sync.withLock
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
+import com.tom_roush.pdfbox.text.TextPosition
 import kotlin.math.abs
 import kotlin.math.hypot
 
@@ -119,6 +120,19 @@ private data class Stroke(
     val isErasing: Boolean = false,
     val pageIndex: Int
 )
+
+private data class TextCharBox(
+    val text: String,
+    val leftFrac: Float,
+    val topFrac: Float,
+    val rightFrac: Float,
+    val bottomFrac: Float
+)
+
+private enum class TextHandleDrag {
+    START,
+    END
+}
 
 private data class RecentDocument(
     val id: String,
@@ -188,8 +202,6 @@ private fun PdfReaderScreen() {
     var currentPage by remember { mutableIntStateOf(0) }
     var pageBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
-    var selectedPageText by remember { mutableStateOf("") }
-    var showTextDialog by remember { mutableStateOf(false) }
     var isExtractingText by remember { mutableStateOf(false) }
     var isNightMode by remember { mutableStateOf(loadNightModePreference(context)) }
     var isContinuousMode by remember { mutableStateOf(loadContinuousModePreference(context)) }
@@ -211,6 +223,12 @@ private fun PdfReaderScreen() {
     var drawingColor by remember { mutableStateOf(0xFF000000) }  // Black
     var isEraserMode by remember { mutableStateOf(false) }
     var isStylusActive by remember { mutableStateOf(false) }
+
+    // True on-page text selection state (Adobe-style handles)
+    var isTextSelectionMode by remember { mutableStateOf(false) }
+    var textBoxesByPage by remember { mutableStateOf<Map<Int, List<TextCharBox>>>(emptyMap()) }
+    var selectedTextRange by remember { mutableStateOf<IntRange?>(null) }
+    var activeTextHandle by remember { mutableStateOf<TextHandleDrag?>(null) }
 
     val goToPreviousPage = {
         if (currentPage > 0) currentPage--
@@ -376,6 +394,8 @@ private fun PdfReaderScreen() {
         zoom = 1f
         offsetX = 0f
         offsetY = 0f
+        selectedTextRange = null
+        activeTextHandle = null
     }
 
     @Composable
@@ -473,15 +493,28 @@ private fun PdfReaderScreen() {
             }
             Button(
                 onClick = {
+                    if (isTextSelectionMode) {
+                        isTextSelectionMode = false
+                        selectedTextRange = null
+                        activeTextHandle = null
+                        return@Button
+                    }
+
                     val uri = currentPdfUri ?: return@Button
                     isExtractingText = true
                     errorMessage = null
                     scope.launch {
                         try {
-                            selectedPageText = extractPageText(context, uri, currentPage)
-                            showTextDialog = true
+                            val boxes = extractPageCharBoxes(context, uri, currentPage)
+                            textBoxesByPage = textBoxesByPage.toMutableMap().apply {
+                                put(currentPage, boxes)
+                            }
+                            isTextSelectionMode = true
+                            isHighlightMode = false
+                            isDrawingMode = false
+                            selectedTextRange = null
                         } catch (e: Exception) {
-                            errorMessage = e.message ?: "Failed to extract page text"
+                            errorMessage = e.message ?: "Failed to prepare page text selection"
                         } finally {
                             isExtractingText = false
                         }
@@ -489,13 +522,22 @@ private fun PdfReaderScreen() {
                 },
                 enabled = pdfSession != null && !isExtractingText
             ) {
-                Text(if (isExtractingText) "Extracting..." else "Text")
+                Text(
+                    when {
+                        isExtractingText -> "Text..."
+                        isTextSelectionMode -> "Text ON"
+                        else -> "Text"
+                    }
+                )
             }
             Button(
                 onClick = {
                     if (!isContinuousMode) {
                         isHighlightMode = !isHighlightMode
-                        if (isHighlightMode) isDrawingMode = false
+                        if (isHighlightMode) {
+                            isDrawingMode = false
+                            isTextSelectionMode = false
+                        }
                     }
                 },
                 enabled = pdfSession != null && !isContinuousMode
@@ -506,7 +548,10 @@ private fun PdfReaderScreen() {
                 onClick = {
                     if (!isContinuousMode) {
                         isDrawingMode = !isDrawingMode
-                        if (isDrawingMode) isHighlightMode = false
+                        if (isDrawingMode) {
+                            isHighlightMode = false
+                            isTextSelectionMode = false
+                        }
                     }
                 },
                 enabled = pdfSession != null && !isContinuousMode
@@ -548,6 +593,7 @@ private fun PdfReaderScreen() {
                     if (isContinuousMode) {
                         isHighlightMode = false
                         isDrawingMode = false
+                        isTextSelectionMode = false
                         zoom = 1f
                         offsetX = 0f
                         offsetY = 0f
@@ -599,9 +645,12 @@ private fun PdfReaderScreen() {
                             translationX = offsetX
                             translationY = offsetY
                         }
-                        .transformable(state = transformState, enabled = !isHighlightMode)
-                        .pointerInput(isHighlightMode, zoom) {
-                            if (isHighlightMode || zoom > 1.05f) return@pointerInput
+                        .transformable(
+                            state = transformState,
+                            enabled = !isHighlightMode && !isDrawingMode && !isTextSelectionMode
+                        )
+                        .pointerInput(isHighlightMode, isDrawingMode, isTextSelectionMode, zoom) {
+                            if (isHighlightMode || isDrawingMode || isTextSelectionMode || zoom > 1.05f) return@pointerInput
                             var dragDistance = 0f
                             detectHorizontalDragGestures(
                                 onHorizontalDrag = { change, dragAmount ->
@@ -620,8 +669,8 @@ private fun PdfReaderScreen() {
                                 }
                             )
                         }
-                        .pointerInput(isHighlightMode, zoom) {
-                            if (isHighlightMode || zoom > 1.05f) return@pointerInput
+                        .pointerInput(isHighlightMode, isDrawingMode, isTextSelectionMode, zoom) {
+                            if (isHighlightMode || isDrawingMode || isTextSelectionMode || zoom > 1.05f) return@pointerInput
                             detectTapGestures { tapOffset ->
                                 val width = viewerSize.width.toFloat().coerceAtLeast(1f)
                                 val leftZone = width * 0.25f
@@ -632,8 +681,8 @@ private fun PdfReaderScreen() {
                                 }
                             }
                         }
-                        .pointerInput(isHighlightMode, currentPage, viewerSize) {
-                            if (!isHighlightMode) return@pointerInput
+                        .pointerInput(isHighlightMode, isDrawingMode, isTextSelectionMode, currentPage, viewerSize) {
+                            if (!isHighlightMode || isDrawingMode || isTextSelectionMode) return@pointerInput
                             detectDragGestures(
                                 onDragStart = { offset ->
                                     dragStart = offset
@@ -673,6 +722,67 @@ private fun PdfReaderScreen() {
                                 },
                                 onDrag = { change, _ ->
                                     dragCurrent = change.position
+                                    change.consume()
+                                }
+                            )
+                        }
+                        .pointerInput(isTextSelectionMode, currentPage, viewerSize, textBoxesByPage, selectedTextRange) {
+                            if (!isTextSelectionMode) return@pointerInput
+                            val boxes = textBoxesByPage[currentPage].orEmpty()
+                            detectTapGestures(
+                                onLongPress = { pressOffset ->
+                                    if (boxes.isEmpty()) return@detectTapGestures
+                                    val xFrac = (pressOffset.x / viewerSize.width.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
+                                    val yFrac = (pressOffset.y / viewerSize.height.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
+                                    val index = findNearestTextIndex(boxes, xFrac, yFrac) ?: return@detectTapGestures
+                                    selectedTextRange = expandToWordRange(boxes, index)
+                                },
+                                onTap = {
+                                    activeTextHandle = null
+                                }
+                            )
+                        }
+                        .pointerInput(isTextSelectionMode, currentPage, viewerSize, textBoxesByPage, selectedTextRange) {
+                            if (!isTextSelectionMode) return@pointerInput
+                            val boxes = textBoxesByPage[currentPage].orEmpty()
+                            if (boxes.isEmpty()) return@pointerInput
+
+                            detectDragGestures(
+                                onDragStart = { offset ->
+                                    val range = selectedTextRange ?: return@detectDragGestures
+                                    val handles = computeTextHandleOffsets(range, boxes, viewerSize)
+                                    val startDist = offset.minus(handles.first).getDistance()
+                                    val endDist = offset.minus(handles.second).getDistance()
+                                    activeTextHandle = when {
+                                        startDist <= 36f -> TextHandleDrag.START
+                                        endDist <= 36f -> TextHandleDrag.END
+                                        else -> null
+                                    }
+                                },
+                                onDragCancel = {
+                                    activeTextHandle = null
+                                },
+                                onDragEnd = {
+                                    activeTextHandle = null
+                                },
+                                onDrag = { change, _ ->
+                                    val handle = activeTextHandle ?: return@detectDragGestures
+                                    val currentRange = selectedTextRange ?: return@detectDragGestures
+                                    val xFrac = (change.position.x / viewerSize.width.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
+                                    val yFrac = (change.position.y / viewerSize.height.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
+                                    val nearest = findNearestTextIndex(boxes, xFrac, yFrac) ?: return@detectDragGestures
+
+                                    selectedTextRange = when (handle) {
+                                        TextHandleDrag.START -> {
+                                            val start = nearest.coerceAtMost(currentRange.last)
+                                            start..currentRange.last
+                                        }
+
+                                        TextHandleDrag.END -> {
+                                            val end = nearest.coerceAtLeast(currentRange.first)
+                                            currentRange.first..end
+                                        }
+                                    }
                                     change.consume()
                                 }
                             )
@@ -725,47 +835,74 @@ private fun PdfReaderScreen() {
                                 size = Size(width, height)
                             )
                         }
+
+                        if (isTextSelectionMode) {
+                            val boxes = textBoxesByPage[currentPage].orEmpty()
+                            val range = selectedTextRange
+                            if (range != null) {
+                                boxes.slice(range).forEach { box ->
+                                    val left = box.leftFrac * size.width
+                                    val top = box.topFrac * size.height
+                                    val width = (box.rightFrac - box.leftFrac) * size.width
+                                    val height = (box.bottomFrac - box.topFrac) * size.height
+                                    drawRect(
+                                        color = ComposeColor(0xFF64B5F6).copy(alpha = 0.32f),
+                                        topLeft = Offset(left, top),
+                                        size = Size(width, height)
+                                    )
+                                }
+
+                                val (startHandle, endHandle) = computeTextHandleOffsets(range, boxes, viewerSize)
+                                drawCircle(
+                                    color = ComposeColor(0xFF1E88E5),
+                                    radius = 10f,
+                                    center = startHandle
+                                )
+                                drawCircle(
+                                    color = ComposeColor(0xFF1E88E5),
+                                    radius = 10f,
+                                    center = endHandle
+                                )
+                            }
+                        }
                     }
 
-                    if (showTextDialog) {
-                        Box(
+                    if (isTextSelectionMode) {
+                        val boxes = textBoxesByPage[currentPage].orEmpty()
+                        val selectedText = selectedTextRange?.let { range -> buildSelectedText(boxes, range) }.orEmpty()
+
+                        Card(
                             modifier = Modifier
-                                .fillMaxSize()
-                                .background(ComposeColor.Black.copy(alpha = 0.15f)),
-                            contentAlignment = Alignment.Center
+                                .align(Alignment.TopCenter)
+                                .padding(top = 8.dp)
                         ) {
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth(0.92f)
-                                    .fillMaxHeight(0.72f)
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(12.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                Text(
+                                    text = if (selectedTextRange == null) {
+                                        "Long-press text, then drag handles"
+                                    } else {
+                                        "${selectedText.length} chars selected"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                TextButton(
+                                    enabled = selectedText.isNotBlank(),
+                                    onClick = {
+                                        clipboardManager.setText(AnnotatedString(selectedText))
+                                    }
                                 ) {
-                                    Text("Page Text", style = MaterialTheme.typography.titleMedium)
-                                    SelectionContainer {
-                                        Text(
-                                            text = selectedPageText.ifBlank {
-                                                "No extractable text found on this page. This may be a scanned/image-only page."
-                                            },
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .verticalScroll(rememberScrollState())
-                                        )
-                                    }
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        TextButton(onClick = {
-                                            clipboardManager.setText(AnnotatedString(selectedPageText))
-                                        }) {
-                                            Text("Copy")
-                                        }
-                                        TextButton(onClick = { showTextDialog = false }) {
-                                            Text("Close")
-                                        }
-                                    }
+                                    Text("Copy")
+                                }
+                                TextButton(onClick = {
+                                    isTextSelectionMode = false
+                                    selectedTextRange = null
+                                    activeTextHandle = null
+                                }) {
+                                    Text("Done")
                                 }
                             }
                         }
@@ -1151,6 +1288,52 @@ private suspend fun extractPageText(context: android.content.Context, uri: Uri, 
         } ?: ""
     }
 
+private suspend fun extractPageCharBoxes(
+    context: android.content.Context,
+    uri: Uri,
+    pageIndex: Int
+): List<TextCharBox> = withContext(Dispatchers.IO) {
+    PDFBoxResourceLoader.init(context.applicationContext)
+    val input = context.contentResolver.openInputStream(uri) ?: return@withContext emptyList()
+    input.use { stream ->
+        PDDocument.load(stream).use { document ->
+            if (pageIndex !in 0 until document.numberOfPages) return@withContext emptyList()
+
+            val page = document.getPage(pageIndex)
+            val mediaWidth = page.mediaBox.width.coerceAtLeast(1f)
+            val mediaHeight = page.mediaBox.height.coerceAtLeast(1f)
+            val boxes = mutableListOf<TextCharBox>()
+
+            val stripper = object : PDFTextStripper() {
+                override fun processTextPosition(text: TextPosition) {
+                    val unicode = text.unicode ?: return
+                    if (unicode.isEmpty()) return
+
+                    val left = text.xDirAdj
+                    val top = text.yDirAdj - text.heightDir
+                    val right = left + text.widthDirAdj
+                    val bottom = top + text.heightDir
+
+                    boxes += TextCharBox(
+                        text = unicode,
+                        leftFrac = (left / mediaWidth).coerceIn(0f, 1f),
+                        topFrac = (top / mediaHeight).coerceIn(0f, 1f),
+                        rightFrac = (right / mediaWidth).coerceIn(0f, 1f),
+                        bottomFrac = (bottom / mediaHeight).coerceIn(0f, 1f)
+                    )
+                }
+            }.apply {
+                startPage = pageIndex + 1
+                endPage = pageIndex + 1
+                sortByPosition = true
+            }
+
+            stripper.getText(document)
+            boxes
+        }
+    }
+}
+
 private suspend fun openDocumentFromUriString(
     context: android.content.Context,
     uriString: String,
@@ -1428,6 +1611,78 @@ private fun strokePointFromMotionEvent(
         pressure = pressure,
         size = calculateStrokeWidth(pressure, isEraser)
     )
+}
+
+private fun findNearestTextIndex(
+    boxes: List<TextCharBox>,
+    xFrac: Float,
+    yFrac: Float
+): Int? {
+    if (boxes.isEmpty()) return null
+
+    var bestIdx = 0
+    var bestDistance = Float.MAX_VALUE
+    boxes.forEachIndexed { index, box ->
+        val centerX = (box.leftFrac + box.rightFrac) / 2f
+        val centerY = (box.topFrac + box.bottomFrac) / 2f
+        val dx = centerX - xFrac
+        val dy = centerY - yFrac
+        val dist = (dx * dx) + (dy * dy)
+        if (dist < bestDistance) {
+            bestDistance = dist
+            bestIdx = index
+        }
+    }
+    return bestIdx
+}
+
+private fun expandToWordRange(boxes: List<TextCharBox>, seedIndex: Int): IntRange {
+    if (boxes.isEmpty()) return 0..0
+    val safeSeed = seedIndex.coerceIn(0, boxes.lastIndex)
+    var start = safeSeed
+    var end = safeSeed
+
+    while (start > 0 && !boxes[start - 1].text.isBlank()) {
+        start--
+    }
+    while (end < boxes.lastIndex && !boxes[end + 1].text.isBlank()) {
+        end++
+    }
+    return start..end
+}
+
+private fun computeTextHandleOffsets(
+    range: IntRange,
+    boxes: List<TextCharBox>,
+    viewport: IntSize
+): Pair<Offset, Offset> {
+    val width = viewport.width.toFloat().coerceAtLeast(1f)
+    val height = viewport.height.toFloat().coerceAtLeast(1f)
+    val startBox = boxes[range.first.coerceIn(0, boxes.lastIndex)]
+    val endBox = boxes[range.last.coerceIn(0, boxes.lastIndex)]
+
+    val start = Offset(
+        x = startBox.leftFrac * width,
+        y = startBox.bottomFrac * height
+    )
+    val end = Offset(
+        x = endBox.rightFrac * width,
+        y = endBox.bottomFrac * height
+    )
+    return start to end
+}
+
+private fun buildSelectedText(boxes: List<TextCharBox>, range: IntRange): String {
+    if (boxes.isEmpty()) return ""
+    val safeStart = range.first.coerceIn(0, boxes.lastIndex)
+    val safeEnd = range.last.coerceIn(0, boxes.lastIndex)
+    if (safeEnd < safeStart) return ""
+
+    val sb = StringBuilder()
+    for (i in safeStart..safeEnd) {
+        sb.append(boxes[i].text)
+    }
+    return sb.toString().trim()
 }
 
 private fun buildSmoothAndroidPath(points: List<StrokePoint>): Path {
