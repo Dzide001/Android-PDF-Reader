@@ -180,9 +180,24 @@ private fun PdfReaderScreen() {
     }
 
     val transformState = rememberTransformableState { zoomChange, panChange, _ ->
-        zoom = (zoom * zoomChange).coerceIn(1f, 4f)
-        offsetX += panChange.x
-        offsetY += panChange.y
+        val targetZoom = (zoom * zoomChange).coerceIn(1f, 4f)
+        if (targetZoom <= 1.01f) {
+            zoom = 1f
+            offsetX = 0f
+            offsetY = 0f
+            return@rememberTransformableState
+        }
+
+        val (clampedX, clampedY) = clampPanOffset(
+            rawOffsetX = offsetX + panChange.x,
+            rawOffsetY = offsetY + panChange.y,
+            zoom = targetZoom,
+            viewport = viewerSize
+        )
+
+        zoom = targetZoom
+        offsetX = clampedX
+        offsetY = clampedY
     }
 
     val openDocumentLauncher = rememberLauncherForActivityResult(OpenDocument()) { uri: Uri? ->
@@ -425,7 +440,17 @@ private fun PdfReaderScreen() {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .onSizeChanged { viewerSize = it }
+                        .onSizeChanged {
+                            viewerSize = it
+                            val (clampedX, clampedY) = clampPanOffset(
+                                rawOffsetX = offsetX,
+                                rawOffsetY = offsetY,
+                                zoom = zoom,
+                                viewport = viewerSize
+                            )
+                            offsetX = clampedX
+                            offsetY = clampedY
+                        }
                         .graphicsLayer {
                             scaleX = zoom
                             scaleY = zoom
@@ -840,4 +865,20 @@ private fun upsertRecentDocument(
         isFavorite = keepFavorite || (previous?.isFavorite == true)
     )
     return listOf(updated) + existing.filterNot { it.id == id }
+}
+
+private fun clampPanOffset(
+    rawOffsetX: Float,
+    rawOffsetY: Float,
+    zoom: Float,
+    viewport: IntSize
+): Pair<Float, Float> {
+    if (zoom <= 1f || viewport.width <= 0 || viewport.height <= 0) {
+        return 0f to 0f
+    }
+
+    val maxX = (viewport.width * (zoom - 1f)) / 2f
+    val maxY = (viewport.height * (zoom - 1f)) / 2f
+
+    return rawOffsetX.coerceIn(-maxX, maxX) to rawOffsetY.coerceIn(-maxY, maxY)
 }
