@@ -168,7 +168,14 @@ sudo apt-get install cmake openjdk-11-jdk-headless
 
 # With native debugging
 ./gradlew assembleDebug -Djava.library.path=...
+
+# Prepare Beta 1 F-Droid package
+./scripts/release-beta-fdroid.sh
 ```
+
+F-Droid release docs and metadata:
+- docs/FDROID_BETA_RELEASE.md
+- fdroid/com.pdfreader.yml
 
 ---
 

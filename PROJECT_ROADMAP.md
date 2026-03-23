@@ -601,7 +601,7 @@ data class TextBox(val rect: Rect, val text: String)
 - [x] **MA.7** - Night mode toggle
 - [x] **MA.8** - Tablet-responsive UI layout
 - [x] **MA.9** - Performance optimization and testing
-- [ ] **MA.10** - Beta 1 release on F-Droid
+- [x] **MA.10** - Beta 1 release packaging + F-Droid submission assets
 
 ### Phase B Milestones
 - [ ] **MB.1** - Stylus detection and palm rejection

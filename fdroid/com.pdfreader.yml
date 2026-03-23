@@ -1,0 +1,37 @@
+Categories:
+  - Reading
+  - Office
+License: AGPL-3.0-only
+AuthorName: Dzide001
+AuthorEmail: dev@pdfreader.local
+SourceCode: https://github.com/Dzide001/Android-PDF-Reader
+IssueTracker: https://github.com/Dzide001/Android-PDF-Reader/issues
+Changelog: https://github.com/Dzide001/Android-PDF-Reader/releases
+
+AutoName: PDF Reader
+Summary: Open-source PDF reader and editor for Android
+Description: |
+  PDF Reader is an open-source Android app for viewing and annotating PDF files.
+  
+  Current beta includes:
+  * Fast PDF viewing
+  * Page mode and continuous scroll mode
+  * Pinch zoom with bounded pan
+  * Text extraction and copy
+  * Basic highlight annotations
+  * Night mode
+  * Tablet-adaptive layout
+
+RepoType: git
+Repo: https://github.com/Dzide001/Android-PDF-Reader.git
+
+Builds:
+  - versionName: 0.1.0-beta1
+    versionCode: 2
+    commit: main
+    subdir: app
+    gradle:
+      - yes
+
+CurrentVersion: 0.1.0-beta1
+CurrentVersionCode: 2
