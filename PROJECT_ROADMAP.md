@@ -613,7 +613,7 @@ data class TextBox(val rect: Rect, val text: String)
 - [x] **MB.7** - Page reordering (drag-and-drop)
 - [x] **MB.8** - Page insertion and deletion
 - [x] **MB.9** - Basic form filling (text fields, checkboxes)
-- [ ] **MB.10** - Signature capture and placement
+- [x] **MB.10** - Signature capture and placement
 - [ ] **MB.11** - Beta 2 release
 
 ### Phase C Milestones
