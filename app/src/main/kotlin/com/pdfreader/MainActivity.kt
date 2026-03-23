@@ -38,6 +38,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -55,6 +56,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -81,6 +83,8 @@ import androidx.compose.animation.core.tween
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
@@ -165,6 +169,7 @@ private fun PdfReaderScreen() {
     var showTextDialog by remember { mutableStateOf(false) }
     var isExtractingText by remember { mutableStateOf(false) }
     var isNightMode by remember { mutableStateOf(loadNightModePreference(context)) }
+    var isContinuousMode by remember { mutableStateOf(loadContinuousModePreference(context)) }
     var isHighlightMode by remember { mutableStateOf(false) }
     var highlightsByPage by remember { mutableStateOf<Map<Int, List<HighlightRegion>>>(emptyMap()) }
     var dragStart by remember { mutableStateOf<Offset?>(null) }
@@ -174,6 +179,7 @@ private fun PdfReaderScreen() {
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
     var lastRenderMs by remember { mutableStateOf<Long?>(null) }
+    val renderMutex = remember(currentPdfUri) { Mutex() }
 
     val goToPreviousPage = {
         if (currentPage > 0) currentPage--
@@ -299,15 +305,21 @@ private fun PdfReaderScreen() {
         }
     }
 
-    LaunchedEffect(pdfSession, currentPage) {
+    LaunchedEffect(pdfSession, currentPage, isContinuousMode) {
         val session = pdfSession ?: return@LaunchedEffect
+        if (isContinuousMode) {
+            pageBitmap = null
+            lastRenderMs = null
+            return@LaunchedEffect
+        }
+
         val cached = pageCache.get(currentPage)
         if (cached != null && !cached.isRecycled) {
             pageBitmap = cached
             lastRenderMs = 0L
         } else {
             val started = SystemClock.elapsedRealtime()
-            val rendered = renderPageBitmap(session.renderer, currentPage)
+            val rendered = renderPageBitmapSafely(session.renderer, currentPage, renderMutex)
             pageCache.put(currentPage, rendered)
             pageBitmap = rendered
             lastRenderMs = SystemClock.elapsedRealtime() - started
@@ -322,7 +334,7 @@ private fun PdfReaderScreen() {
         neighbors.forEach { neighborPage ->
             scope.launch(Dispatchers.Default) {
                 runCatching {
-                    val neighborBitmap = renderPageBitmap(session.renderer, neighborPage)
+                    val neighborBitmap = renderPageBitmapSafely(session.renderer, neighborPage, renderMutex)
                     withContext(Dispatchers.Main) {
                         pageCache.put(neighborPage, neighborBitmap)
                     }
@@ -413,13 +425,13 @@ private fun PdfReaderScreen() {
             }
             Button(
                 onClick = goToPreviousPage,
-                enabled = currentPage > 0 && pdfSession != null
+                enabled = !isContinuousMode && currentPage > 0 && pdfSession != null
             ) {
                 Text("Previous")
             }
             Button(
                 onClick = goToNextPage,
-                enabled = pdfSession != null && currentPage < ((pdfSession?.renderer?.pageCount ?: 1) - 1)
+                enabled = !isContinuousMode && pdfSession != null && currentPage < ((pdfSession?.renderer?.pageCount ?: 1) - 1)
             ) {
                 Text("Next")
             }
@@ -444,8 +456,12 @@ private fun PdfReaderScreen() {
                 Text(if (isExtractingText) "Extracting..." else "Text")
             }
             Button(
-                onClick = { isHighlightMode = !isHighlightMode },
-                enabled = pdfSession != null
+                onClick = {
+                    if (!isContinuousMode) {
+                        isHighlightMode = !isHighlightMode
+                    }
+                },
+                enabled = pdfSession != null && !isContinuousMode
             ) {
                 Text(if (isHighlightMode) "Highlight ON" else "Highlight")
             }
@@ -455,9 +471,23 @@ private fun PdfReaderScreen() {
                         remove(currentPage)
                     }
                 },
-                enabled = (highlightsByPage[currentPage]?.isNotEmpty() == true)
+                enabled = !isContinuousMode && (highlightsByPage[currentPage]?.isNotEmpty() == true)
             ) {
                 Text("Clear")
+            }
+            Button(
+                onClick = {
+                    isContinuousMode = !isContinuousMode
+                    saveContinuousModePreference(context, isContinuousMode)
+                    if (isContinuousMode) {
+                        isHighlightMode = false
+                        zoom = 1f
+                        offsetX = 0f
+                        offsetY = 0f
+                    }
+                }
+            ) {
+                Text(if (isContinuousMode) "Page Mode" else "Scroll Mode")
             }
             Button(
                 onClick = {
@@ -634,6 +664,91 @@ private fun PdfReaderScreen() {
         }
     }
 
+    @Composable
+    fun ContinuousViewerSection(modifier: Modifier = Modifier) {
+        val session = pdfSession
+        if (session == null) {
+            Box(
+                modifier = modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("Open a PDF to begin")
+            }
+            return
+        }
+
+        val totalPages = session.renderer.pageCount
+        val initialIndex = currentPage.coerceIn(0, (totalPages - 1).coerceAtLeast(0))
+        val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialIndex)
+
+        LaunchedEffect(listState.firstVisibleItemIndex, totalPages) {
+            if (totalPages > 0) {
+                currentPage = listState.firstVisibleItemIndex.coerceIn(0, totalPages - 1)
+            }
+        }
+
+        LazyColumn(
+            state = listState,
+            modifier = modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(totalPages) { pageIndex ->
+                val pageBitmapState = produceState<Bitmap?>(
+                    initialValue = pageCache.get(pageIndex),
+                    key1 = session,
+                    key2 = pageIndex
+                ) {
+                    val cached = pageCache.get(pageIndex)
+                    if (cached != null && !cached.isRecycled) {
+                        value = cached
+                        return@produceState
+                    }
+
+                    val rendered = renderPageBitmapSafely(session.renderer, pageIndex, renderMutex)
+                    pageCache.put(pageIndex, rendered)
+                    value = rendered
+                }.value
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.background)
+                        .padding(6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (pageBitmapState == null) {
+                        Text("Rendering page ${pageIndex + 1}…")
+                    } else {
+                        Image(
+                            bitmap = pageBitmapState.asImageBitmap(),
+                            contentDescription = "Rendered PDF page ${pageIndex + 1}",
+                            contentScale = ContentScale.Fit,
+                            colorFilter = if (isNightMode) {
+                                ColorFilter.colorMatrix(
+                                    ColorMatrix(
+                                        floatArrayOf(
+                                            -1f, 0f, 0f, 0f, 255f,
+                                            0f, -1f, 0f, 0f, 255f,
+                                            0f, 0f, -1f, 0f, 255f,
+                                            0f, 0f, 0f, 1f, 0f
+                                        )
+                                    )
+                                )
+                            } else {
+                                null
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("PDF Reader") })
@@ -664,7 +779,11 @@ private fun PdfReaderScreen() {
                             text = if (pdfSession == null) {
                                 "No document selected"
                             } else {
-                                "Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
+                                if (isContinuousMode) {
+                                    "Continuous • Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
+                                } else {
+                                    "Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
+                                }
                             }
                         )
 
@@ -691,11 +810,19 @@ private fun PdfReaderScreen() {
                         }
                     }
 
-                    ViewerSection(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                    )
+                    if (isContinuousMode) {
+                        ContinuousViewerSection(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                        )
+                    } else {
+                        ViewerSection(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                        )
+                    }
                 }
             } else {
                 Column(
@@ -708,7 +835,11 @@ private fun PdfReaderScreen() {
                         text = if (pdfSession == null) {
                             "No document selected"
                         } else {
-                            "Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
+                            if (isContinuousMode) {
+                                "Continuous • Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
+                            } else {
+                                "Page ${currentPage + 1} / ${pdfSession?.renderer?.pageCount ?: 0}"
+                            }
                         }
                     )
 
@@ -734,7 +865,11 @@ private fun PdfReaderScreen() {
                         )
                     }
 
-                    ViewerSection(modifier = Modifier.weight(1f))
+                    if (isContinuousMode) {
+                        ContinuousViewerSection(modifier = Modifier.weight(1f))
+                    } else {
+                        ViewerSection(modifier = Modifier.weight(1f))
+                    }
                 }
             }
         }
@@ -782,6 +917,14 @@ private suspend fun renderPageBitmap(renderer: PdfRenderer, pageIndex: Int): Bit
             bitmap
         }
     }
+
+private suspend fun renderPageBitmapSafely(
+    renderer: PdfRenderer,
+    pageIndex: Int,
+    mutex: Mutex
+): Bitmap = mutex.withLock {
+    renderPageBitmap(renderer, pageIndex)
+}
 
 private suspend fun extractPageText(context: android.content.Context, uri: Uri, pageIndex: Int): String =
     withContext(Dispatchers.IO) {
@@ -890,6 +1033,16 @@ private fun loadNightModePreference(context: android.content.Context): Boolean {
 private fun saveNightModePreference(context: android.content.Context, enabled: Boolean) {
     val prefs = context.getSharedPreferences("pdf_reader_prefs", android.content.Context.MODE_PRIVATE)
     prefs.edit().putBoolean("night_mode_enabled", enabled).apply()
+}
+
+private fun loadContinuousModePreference(context: android.content.Context): Boolean {
+    val prefs = context.getSharedPreferences("pdf_reader_prefs", android.content.Context.MODE_PRIVATE)
+    return prefs.getBoolean("continuous_mode_enabled", false)
+}
+
+private fun saveContinuousModePreference(context: android.content.Context, enabled: Boolean) {
+    val prefs = context.getSharedPreferences("pdf_reader_prefs", android.content.Context.MODE_PRIVATE)
+    prefs.edit().putBoolean("continuous_mode_enabled", enabled).apply()
 }
 
 private fun upsertRecentDocument(
