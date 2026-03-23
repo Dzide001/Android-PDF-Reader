@@ -13,7 +13,6 @@ import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.util.LruCache
-import android.view.MotionEvent
 import org.json.JSONArray
 import org.json.JSONObject
 import androidx.activity.ComponentActivity
@@ -94,6 +93,7 @@ import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import kotlin.math.abs
+import kotlin.math.hypot
 
 private data class HighlightRegion(
     val leftFrac: Float,
@@ -749,7 +749,11 @@ private fun PdfReaderScreen() {
                                 pressure = 0.5f,  // Touch doesn't have pressure; stylus would via platform layer
                                 size = calculateStrokeWidth(0.5f, isEraserMode)
                             )
-                            currentStrokePoints = (currentStrokePoints + point).takeLast(500)
+                            val last = currentStrokePoints.lastOrNull()
+                            val shouldAppend = last == null || pointDistance(last, point) >= 1.5f
+                            if (shouldAppend) {
+                                currentStrokePoints = (currentStrokePoints + point).takeLast(1200)
+                            }
                         },
                         onDragEnd = {
                             if (currentStrokePoints.isNotEmpty()) {
@@ -788,16 +792,17 @@ private fun PdfReaderScreen() {
 
             // Render current stroke being drawn
             Canvas(modifier = Modifier.fillMaxSize()) {
-                currentStrokePoints.forEachIndexed { idx, point ->
-                    if (idx > 0) {
-                        val prev = currentStrokePoints[idx - 1]
-                        drawLine(
-                            color = ComposeColor(drawingColor),
-                            start = Offset(prev.x, prev.y),
-                            end = Offset(point.x, point.y),
-                            strokeWidth = point.size
+                val previewPath = buildSmoothComposePath(currentStrokePoints)
+                if (!previewPath.isEmpty) {
+                    drawPath(
+                        path = previewPath,
+                        color = if (isEraserMode) ComposeColor.White.copy(alpha = 0.35f) else ComposeColor(drawingColor),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(
+                            width = currentStrokePoints.lastOrNull()?.size ?: 4f,
+                            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                            join = androidx.compose.ui.graphics.StrokeJoin.Round
                         )
-                    }
+                    )
                 }
             }
         }
@@ -1274,6 +1279,10 @@ private fun renderStrokesToBitmap(
     height: Int,
     strokes: List<Stroke>
 ): Bitmap {
+    if (width <= 0 || height <= 0) {
+        return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+    }
+
     val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
     bitmap.eraseColor(AndroidColor.TRANSPARENT)
 
@@ -1286,6 +1295,7 @@ private fun renderStrokesToBitmap(
         paint.color = stroke.color.toInt()
         paint.strokeCap = Paint.Cap.ROUND
         paint.strokeJoin = Paint.Join.ROUND
+        paint.style = Paint.Style.STROKE
 
         if (stroke.isErasing) {
             // Eraser: clear pixels with PorterDuff
@@ -1294,17 +1304,63 @@ private fun renderStrokesToBitmap(
             paint.xfermode = null
         }
 
-        val path = Path()
-        stroke.points.forEachIndexed { idx, point ->
-            paint.strokeWidth = point.size
-            if (idx == 0) {
-                path.moveTo(point.x, point.y)
-            } else {
-                path.lineTo(point.x, point.y)
-            }
+        val path = buildSmoothAndroidPath(stroke.points)
+        if (!path.isEmpty) {
+            paint.strokeWidth = stroke.points.lastOrNull()?.size ?: 4f
+            canvas.drawPath(path, paint)
         }
-        canvas.drawPath(path, paint)
     }
 
     return bitmap
+}
+
+private fun pointDistance(a: StrokePoint, b: StrokePoint): Float {
+    return hypot((a.x - b.x).toDouble(), (a.y - b.y).toDouble()).toFloat()
+}
+
+private fun buildSmoothAndroidPath(points: List<StrokePoint>): Path {
+    val path = Path()
+    if (points.isEmpty()) return path
+
+    if (points.size == 1) {
+        path.moveTo(points.first().x, points.first().y)
+        path.lineTo(points.first().x + 0.1f, points.first().y + 0.1f)
+        return path
+    }
+
+    path.moveTo(points.first().x, points.first().y)
+    for (i in 1 until points.size) {
+        val prev = points[i - 1]
+        val current = points[i]
+        val midX = (prev.x + current.x) / 2f
+        val midY = (prev.y + current.y) / 2f
+        path.quadTo(prev.x, prev.y, midX, midY)
+    }
+    val last = points.last()
+    path.lineTo(last.x, last.y)
+    return path
+}
+
+private fun buildSmoothComposePath(points: List<StrokePoint>): androidx.compose.ui.graphics.Path {
+    val path = androidx.compose.ui.graphics.Path()
+    if (points.isEmpty()) return path
+
+    if (points.size == 1) {
+        val p = points.first()
+        path.moveTo(p.x, p.y)
+        path.lineTo(p.x + 0.1f, p.y + 0.1f)
+        return path
+    }
+
+    path.moveTo(points.first().x, points.first().y)
+    for (i in 1 until points.size) {
+        val prev = points[i - 1]
+        val current = points[i]
+        val midX = (prev.x + current.x) / 2f
+        val midY = (prev.y + current.y) / 2f
+        path.quadraticBezierTo(prev.x, prev.y, midX, midY)
+    }
+    val last = points.last()
+    path.lineTo(last.x, last.y)
+    return path
 }
