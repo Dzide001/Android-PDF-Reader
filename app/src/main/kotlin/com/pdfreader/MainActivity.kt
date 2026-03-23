@@ -182,12 +182,16 @@ private data class SignaturePoint(
     val yFrac: Float
 )
 
+private data class SignatureStroke(
+    val points: List<SignaturePoint>
+)
+
 private data class SignaturePlacement(
     val leftFrac: Float,
     val topFrac: Float,
     val rightFrac: Float,
     val bottomFrac: Float,
-    val points: List<SignaturePoint>,
+    val strokes: List<SignatureStroke>,
     val color: Long = 0xFF000000,
     val strokeWidthPx: Float = 2.5f
 )
@@ -299,13 +303,15 @@ private fun PdfReaderScreen() {
     var showFormPanel by remember { mutableStateOf(false) }
     var isLoadingFormFields by remember { mutableStateOf(false) }
     var isSavingFormFields by remember { mutableStateOf(false) }
+    var formDirtyFields by remember { mutableStateOf<Set<String>>(emptySet()) }
     var formFieldEntries by remember(currentPdfUri) { mutableStateOf<List<PdfFormFieldEntry>>(emptyList()) }
     var formTextValues by remember(currentPdfUri) { mutableStateOf<Map<String, String>>(emptyMap()) }
     var formCheckboxValues by remember(currentPdfUri) { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
     var isSignatureMode by remember { mutableStateOf(false) }
     var showSignaturePanel by remember { mutableStateOf(false) }
+    var signatureCaptureStrokes by remember { mutableStateOf<List<List<Offset>>>(emptyList()) }
     var signatureCapturePoints by remember { mutableStateOf<List<Offset>>(emptyList()) }
-    var savedSignaturePoints by remember { mutableStateOf(loadSavedSignaturePoints(context)) }
+    var savedSignatureStrokes by remember { mutableStateOf(loadSavedSignatureStrokes(context)) }
     var signaturePlacementsByPage by remember { mutableStateOf<Map<Int, List<SignaturePlacement>>>(emptyMap()) }
     var signatureDragStart by remember { mutableStateOf<Offset?>(null) }
     var signatureDragCurrent by remember { mutableStateOf<Offset?>(null) }
@@ -1061,8 +1067,8 @@ private fun PdfReaderScreen() {
                                 }
                             )
                         }
-                        .pointerInput(isSignatureMode, currentPage, viewerSize, savedSignaturePoints) {
-                            if (!isSignatureMode || savedSignaturePoints.isEmpty()) return@pointerInput
+                        .pointerInput(isSignatureMode, currentPage, viewerSize, savedSignatureStrokes) {
+                            if (!isSignatureMode || savedSignatureStrokes.isEmpty()) return@pointerInput
                             detectDragGestures(
                                 onDragStart = { offset ->
                                     signatureDragStart = offset
@@ -1085,12 +1091,15 @@ private fun PdfReaderScreen() {
                                         val bottom = maxOf(start.y, end.y).coerceIn(0f, height)
 
                                         if ((right - left) > 14f && (bottom - top) > 14f) {
+                                            val normalizedStrokes = savedSignatureStrokes.map { rawStroke ->
+                                                normalizeSignatureStroke(rawStroke)
+                                            }
                                             val placement = SignaturePlacement(
                                                 leftFrac = left / width,
                                                 topFrac = top / height,
                                                 rightFrac = right / width,
                                                 bottomFrac = bottom / height,
-                                                points = savedSignaturePoints
+                                                strokes = normalizedStrokes
                                             )
                                             val existing = signaturePlacementsByPage[currentPage].orEmpty()
                                             signaturePlacementsByPage = signaturePlacementsByPage.toMutableMap().apply {
@@ -1256,13 +1265,16 @@ private fun PdfReaderScreen() {
 
                         val sigStart = signatureDragStart
                         val sigEnd = signatureDragCurrent
-                        if (isSignatureMode && sigStart != null && sigEnd != null && savedSignaturePoints.isNotEmpty()) {
+                        if (isSignatureMode && sigStart != null && sigEnd != null && savedSignatureStrokes.isNotEmpty()) {
+                            val normalizedStrokes = savedSignatureStrokes.map { rawStroke ->
+                                normalizeSignatureStroke(rawStroke)
+                            }
                             val preview = SignaturePlacement(
                                 leftFrac = (minOf(sigStart.x, sigEnd.x) / size.width.coerceAtLeast(1f)).coerceIn(0f, 1f),
                                 topFrac = (minOf(sigStart.y, sigEnd.y) / size.height.coerceAtLeast(1f)).coerceIn(0f, 1f),
                                 rightFrac = (maxOf(sigStart.x, sigEnd.x) / size.width.coerceAtLeast(1f)).coerceIn(0f, 1f),
                                 bottomFrac = (maxOf(sigStart.y, sigEnd.y) / size.height.coerceAtLeast(1f)).coerceIn(0f, 1f),
-                                points = savedSignaturePoints,
+                                strokes = normalizedStrokes,
                                 color = 0xFF1E88E5,
                                 strokeWidthPx = 2f
                             )
@@ -1288,16 +1300,19 @@ private fun PdfReaderScreen() {
                             val boxes = textBoxesByPage[currentPage].orEmpty()
                             val range = selectedTextRange
                             if (range != null) {
-                                boxes.slice(range).forEach { box ->
-                                    val left = box.leftFrac * size.width
-                                    val top = box.topFrac * size.height
-                                    val width = (box.rightFrac - box.leftFrac) * size.width
-                                    val height = (box.bottomFrac - box.topFrac) * size.height
-                                    drawRect(
-                                        color = ComposeColor(0xFF64B5F6).copy(alpha = 0.32f),
-                                        topLeft = Offset(left, top),
-                                        size = Size(width, height)
-                                    )
+                                for (i in range) {
+                                    if (i in boxes.indices) {
+                                        val box = boxes[i]
+                                        val left = box.leftFrac * size.width
+                                        val top = box.topFrac * size.height
+                                        val width = (box.rightFrac - box.leftFrac) * size.width
+                                        val height = (box.bottomFrac - box.topFrac) * size.height
+                                        drawRect(
+                                            color = ComposeColor(0xFF64B5F6).copy(alpha = 0.32f),
+                                            topLeft = Offset(left, top),
+                                            size = Size(width, height)
+                                        )
+                                    }
                                 }
 
                                 val (startHandle, endHandle) = computeTextHandleOffsets(range, boxes, viewerSize)
@@ -1561,22 +1576,39 @@ private fun PdfReaderScreen() {
                                         formFieldEntries.forEach { field ->
                                             when (field.type) {
                                                 PdfFormFieldType.TEXT -> {
+                                                    val isDirty = field.name in formDirtyFields
                                                     OutlinedTextField(
                                                         value = formTextValues[field.name] ?: field.textValue,
                                                         onValueChange = { updated ->
                                                             formTextValues = formTextValues.toMutableMap().apply {
                                                                 put(field.name, updated)
                                                             }
+                                                            formDirtyFields = formDirtyFields + field.name
                                                         },
                                                         label = { Text(field.name) },
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        singleLine = true
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .background(
+                                                                if (isDirty) ComposeColor.Yellow.copy(alpha = 0.1f)
+                                                                else ComposeColor.Transparent
+                                                            ),
+                                                        singleLine = true,
+                                                        colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                                                            focusedBorderColor = if (isDirty) ComposeColor(0xFFFFB300) else androidx.compose.material3.MaterialTheme.colorScheme.primary
+                                                        )
                                                     )
                                                 }
 
                                                 PdfFormFieldType.CHECKBOX -> {
+                                                    val isDirty = field.name in formDirtyFields
                                                     Row(
-                                                        modifier = Modifier.fillMaxWidth(),
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .background(
+                                                                if (isDirty) ComposeColor.Yellow.copy(alpha = 0.1f)
+                                                                else ComposeColor.Transparent
+                                                            )
+                                                            .padding(horizontal = 8.dp, vertical = 4.dp),
                                                         horizontalArrangement = Arrangement.SpaceBetween,
                                                         verticalAlignment = Alignment.CenterVertically
                                                     ) {
@@ -1587,6 +1619,7 @@ private fun PdfReaderScreen() {
                                                                 formCheckboxValues = formCheckboxValues.toMutableMap().apply {
                                                                     put(field.name, checked)
                                                                 }
+                                                                formDirtyFields = formDirtyFields + field.name
                                                             }
                                                         )
                                                     }
@@ -1597,6 +1630,19 @@ private fun PdfReaderScreen() {
                                 }
 
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = {
+                                            formTextValues = emptyMap()
+                                            formCheckboxValues = emptyMap()
+                                            formDirtyFields = emptySet()
+                                            for (field in formFieldEntries) {
+                                                if (field.type == PdfFormFieldType.TEXT) {
+                                                    formTextValues = formTextValues + (field.name to field.textValue)
+                                                }
+                                            }
+                                        },
+                                        enabled = formDirtyFields.isNotEmpty()
+                                    ) { Text("Reset") }
                                     Button(
                                         onClick = {
                                             val uri = currentPdfUri ?: return@Button
@@ -1611,6 +1657,7 @@ private fun PdfReaderScreen() {
                                                         checkboxValues = formCheckboxValues
                                                     )
 
+                                                    formDirtyFields = emptySet()
                                                     openDocumentFromUriString(
                                                         context = context,
                                                         uriString = uri.toString(),
@@ -1632,7 +1679,7 @@ private fun PdfReaderScreen() {
                                                 }
                                             }
                                         },
-                                        enabled = formFieldEntries.isNotEmpty() && !isSavingFormFields
+                                        enabled = formFieldEntries.isNotEmpty() && !isSavingFormFields && formDirtyFields.isNotEmpty()
                                     ) { Text(if (isSavingFormFields) "Applying…" else "Apply") }
 
                                     Button(onClick = { showFormPanel = false }) { Text("Close") }
@@ -1672,8 +1719,18 @@ private fun PdfReaderScreen() {
                                                 onDragStart = { offset ->
                                                     signatureCapturePoints = listOf(offset)
                                                 },
-                                                onDragCancel = {},
-                                                onDragEnd = {},
+                                                onDragCancel = {
+                                                    if (signatureCapturePoints.size >= 2) {
+                                                        signatureCaptureStrokes = signatureCaptureStrokes + listOf(signatureCapturePoints)
+                                                    }
+                                                    signatureCapturePoints = emptyList()
+                                                },
+                                                onDragEnd = {
+                                                    if (signatureCapturePoints.size >= 2) {
+                                                        signatureCaptureStrokes = signatureCaptureStrokes + listOf(signatureCapturePoints)
+                                                    }
+                                                    signatureCapturePoints = emptyList()
+                                                },
                                                 onDrag = { change, _ ->
                                                     signatureCapturePoints = signatureCapturePoints + change.position
                                                     change.consume()
@@ -1682,6 +1739,22 @@ private fun PdfReaderScreen() {
                                         }
                                 ) {
                                     Canvas(modifier = Modifier.fillMaxSize()) {
+                                        signatureCaptureStrokes.forEach { stroke ->
+                                            if (stroke.size >= 2) {
+                                                val path = androidx.compose.ui.graphics.Path().apply {
+                                                    moveTo(stroke.first().x, stroke.first().y)
+                                                    for (i in 1 until stroke.size) {
+                                                        val p = stroke[i]
+                                                        lineTo(p.x, p.y)
+                                                    }
+                                                }
+                                                drawPath(
+                                                    path = path,
+                                                    color = ComposeColor.Black,
+                                                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f)
+                                                )
+                                            }
+                                        }
                                         if (signatureCapturePoints.size >= 2) {
                                             val path = androidx.compose.ui.graphics.Path().apply {
                                                 moveTo(signatureCapturePoints.first().x, signatureCapturePoints.first().y)
@@ -1700,16 +1773,30 @@ private fun PdfReaderScreen() {
                                 }
 
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Button(onClick = { signatureCapturePoints = emptyList() }) { Text("Clear") }
+                                    Button(onClick = {
+                                        if (signatureCaptureStrokes.isNotEmpty()) {
+                                            signatureCaptureStrokes = signatureCaptureStrokes.dropLast(1)
+                                        }
+                                        signatureCapturePoints = emptyList()
+                                    }, enabled = signatureCaptureStrokes.isNotEmpty() || signatureCapturePoints.isNotEmpty()) {
+                                        Text("Undo")
+                                    }
+                                    Button(onClick = {
+                                        signatureCapturePoints = emptyList()
+                                        signatureCaptureStrokes = emptyList()
+                                    }) { Text("Clear All") }
                                     Button(
                                         onClick = {
-                                            val normalized = normalizeSignature(signatureCapturePoints)
-                                            if (normalized.isNotEmpty()) {
-                                                savedSignaturePoints = normalized
-                                                saveSavedSignaturePoints(context, normalized)
+                                            if (signatureCapturePoints.isNotEmpty()) {
+                                                signatureCaptureStrokes = signatureCaptureStrokes + listOf(signatureCapturePoints)
+                                                signatureCapturePoints = emptyList()
+                                            }
+                                            if (signatureCaptureStrokes.isNotEmpty()) {
+                                                savedSignatureStrokes = signatureCaptureStrokes
+                                                saveSavedSignatureStrokes(context, signatureCaptureStrokes)
                                             }
                                         },
-                                        enabled = signatureCapturePoints.size >= 2
+                                        enabled = signatureCaptureStrokes.isNotEmpty() || signatureCapturePoints.size >= 2
                                     ) { Text("Save") }
                                     Button(
                                         onClick = {
@@ -2901,7 +2988,7 @@ private fun buildSmoothComposePath(points: List<StrokePoint>): androidx.compose.
 }
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSignaturePlacement(signature: SignaturePlacement) {
-    if (signature.points.size < 2) return
+    if (signature.strokes.isEmpty()) return
 
     val left = signature.leftFrac.coerceIn(0f, 1f) * size.width
     val top = signature.topFrac.coerceIn(0f, 1f) * size.height
@@ -2910,30 +2997,55 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSignaturePlacem
     val boxWidth = (right - left).coerceAtLeast(1f)
     val boxHeight = (bottom - top).coerceAtLeast(1f)
 
-    val path = androidx.compose.ui.graphics.Path().apply {
-        val first = signature.points.first()
-        moveTo(
-            left + first.xFrac.coerceIn(0f, 1f) * boxWidth,
-            top + first.yFrac.coerceIn(0f, 1f) * boxHeight
-        )
-        for (i in 1 until signature.points.size) {
-            val p = signature.points[i]
-            lineTo(
-                left + p.xFrac.coerceIn(0f, 1f) * boxWidth,
-                top + p.yFrac.coerceIn(0f, 1f) * boxHeight
+    signature.strokes.forEach { stroke ->
+        if (stroke.points.size >= 2) {
+            val path = androidx.compose.ui.graphics.Path().apply {
+                val first = stroke.points.first()
+                moveTo(
+                    left + first.xFrac.coerceIn(0f, 1f) * boxWidth,
+                    top + first.yFrac.coerceIn(0f, 1f) * boxHeight
+                )
+                for (i in 1 until stroke.points.size) {
+                    val p = stroke.points[i]
+                    lineTo(
+                        left + p.xFrac.coerceIn(0f, 1f) * boxWidth,
+                        top + p.yFrac.coerceIn(0f, 1f) * boxHeight
+                    )
+                }
+            }
+
+            drawPath(
+                path = path,
+                color = ComposeColor(signature.color),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = signature.strokeWidthPx,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round
+                )
             )
         }
     }
+}
 
-    drawPath(
-        path = path,
-        color = ComposeColor(signature.color),
-        style = androidx.compose.ui.graphics.drawscope.Stroke(
-            width = signature.strokeWidthPx,
-            cap = androidx.compose.ui.graphics.StrokeCap.Round,
-            join = androidx.compose.ui.graphics.StrokeJoin.Round
+private fun normalizeSignatureStroke(rawPoints: List<Offset>): SignatureStroke {
+    if (rawPoints.isEmpty()) return SignatureStroke(emptyList())
+
+    val minX = rawPoints.minOf { it.x }
+    val maxX = rawPoints.maxOf { it.x }
+    val minY = rawPoints.minOf { it.y }
+    val maxY = rawPoints.maxOf { it.y }
+
+    val width = (maxX - minX).coerceAtLeast(1f)
+    val height = (maxY - minY).coerceAtLeast(1f)
+
+    val normalized = rawPoints.map { p ->
+        SignaturePoint(
+            xFrac = ((p.x - minX) / width).coerceIn(0f, 1f),
+            yFrac = ((p.y - minY) / height).coerceIn(0f, 1f)
         )
-    )
+    }
+
+    return SignatureStroke(normalized)
 }
 
 private fun normalizeSignature(points: List<Offset>): List<SignaturePoint> {
@@ -2955,20 +3067,23 @@ private fun normalizeSignature(points: List<Offset>): List<SignaturePoint> {
     }
 }
 
-private fun loadSavedSignaturePoints(context: android.content.Context): List<SignaturePoint> {
+private fun loadSavedSignatureStrokes(context: android.content.Context): List<List<Offset>> {
     val prefs = context.getSharedPreferences("pdf_reader_prefs", android.content.Context.MODE_PRIVATE)
-    val raw = prefs.getString("saved_signature_points", null) ?: return emptyList()
+    val raw = prefs.getString("saved_signature_strokes", null) ?: return emptyList()
     return try {
-        val arr = JSONArray(raw)
+        val strokesArray = JSONArray(raw)
         buildList {
-            for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
-                add(
-                    SignaturePoint(
-                        xFrac = obj.optDouble("x", 0.0).toFloat().coerceIn(0f, 1f),
-                        yFrac = obj.optDouble("y", 0.0).toFloat().coerceIn(0f, 1f)
-                    )
-                )
+            for (s in 0 until strokesArray.length()) {
+                val pointsArray = strokesArray.getJSONArray(s)
+                val stroke = mutableListOf<Offset>()
+                for (p in 0 until pointsArray.length()) {
+                    val obj = pointsArray.getJSONObject(p)
+                    stroke.add(Offset(
+                        x = obj.optDouble("x", 0.0).toFloat(),
+                        y = obj.optDouble("y", 0.0).toFloat()
+                    ))
+                }
+                if (stroke.isNotEmpty()) add(stroke)
             }
         }
     } catch (_: Exception) {
@@ -2976,16 +3091,20 @@ private fun loadSavedSignaturePoints(context: android.content.Context): List<Sig
     }
 }
 
-private fun saveSavedSignaturePoints(context: android.content.Context, points: List<SignaturePoint>) {
-    val arr = JSONArray()
-    points.forEach { p ->
-        arr.put(
-            JSONObject()
-                .put("x", p.xFrac)
-                .put("y", p.yFrac)
-        )
+private fun saveSavedSignatureStrokes(context: android.content.Context, strokes: List<List<Offset>>) {
+    val strokesArray = JSONArray()
+    strokes.forEach { stroke ->
+        val pointsArray = JSONArray()
+        stroke.forEach { p ->
+            pointsArray.put(
+                JSONObject()
+                    .put("x", p.x)
+                    .put("y", p.y)
+            )
+        }
+        strokesArray.put(pointsArray)
     }
 
     val prefs = context.getSharedPreferences("pdf_reader_prefs", android.content.Context.MODE_PRIVATE)
-    prefs.edit().putString("saved_signature_points", arr.toString()).apply()
+    prefs.edit().putString("saved_signature_strokes", strokesArray.toString()).apply()
 }
