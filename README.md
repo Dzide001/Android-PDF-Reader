@@ -2,13 +2,14 @@
 
 A high-performance, open-source PDF reader and editor for Android phones and tablets, built with Kotlin and Jetpack Compose.
 
-**License:** AGPL v3 | **Status:** Early Development (Phase A)
+**License:** AGPL v3 | **Status:** Beta 2 (Phase B complete)
 
 ---
 
 ## Features (Current & Planned)
 
-### ✅ Phase A - MVP (Current)
+### ✅ Phase A - MVP (Complete)
+
 - Fast PDF rendering with MuPDF
 - Page navigation (swipe, buttons)
 - Zoom and scroll functionality
@@ -18,7 +19,8 @@ A high-performance, open-source PDF reader and editor for Android phones and tab
 - Night mode support
 - Tablet-responsive UI
 
-### 📋 Phase B - Advanced Annotations
+### ✅ Phase B - Advanced Annotations (Complete)
+
 - Low-latency stylus drawing with pressure sensitivity
 - Shape tools (rectangles, circles, arrows)
 - Eraser tool
@@ -169,7 +171,7 @@ sudo apt-get install cmake openjdk-11-jdk-headless
 # With native debugging
 ./gradlew assembleDebug -Djava.library.path=...
 
-# Prepare Beta 1 F-Droid package
+# Prepare Beta 2 F-Droid package
 ./scripts/release-beta-fdroid.sh
 ```
 
@@ -244,7 +246,7 @@ A: Absolutely! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 - **Week 5-6:** Basic annotations (highlight, notes)
 - **Week 7-8:** Library + database + testing
 - **Weeks 9-12:** Advanced stylus, tablet UI, performance tuning
-- **Beta 1:** Release on F-Droid
+- **Beta 2:** Release on F-Droid
 - **Weeks 13-20:** OCR + search (Phase C)
 - **Weeks 21-24:** AI + cloud (Phase D)
 

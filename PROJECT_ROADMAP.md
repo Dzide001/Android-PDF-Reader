@@ -614,7 +614,7 @@ data class TextBox(val rect: Rect, val text: String)
 - [x] **MB.8** - Page insertion and deletion
 - [x] **MB.9** - Basic form filling (text fields, checkboxes)
 - [x] **MB.10** - Signature capture and placement
-- [ ] **MB.11** - Beta 2 release
+- [x] **MB.11** - Beta 2 release
 
 ### Phase C Milestones
 - [ ] **MC.1** - Tesseract integration and build
