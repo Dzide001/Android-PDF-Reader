@@ -75,12 +75,16 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.tween
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
+import kotlin.math.abs
 
 private data class HighlightRegion(
     val leftFrac: Float,
@@ -181,14 +185,7 @@ private fun PdfReaderScreen() {
 
     val transformState = rememberTransformableState { zoomChange, panChange, _ ->
         val targetZoom = (zoom * zoomChange).coerceIn(1f, 4f)
-        if (targetZoom <= 1.01f) {
-            zoom = 1f
-            offsetX = 0f
-            offsetY = 0f
-            return@rememberTransformableState
-        }
-
-        val (clampedX, clampedY) = clampPanOffset(
+        val (softX, softY) = applyPanResistance(
             rawOffsetX = offsetX + panChange.x,
             rawOffsetY = offsetY + panChange.y,
             zoom = targetZoom,
@@ -196,8 +193,56 @@ private fun PdfReaderScreen() {
         )
 
         zoom = targetZoom
-        offsetX = clampedX
-        offsetY = clampedY
+        offsetX = softX
+        offsetY = softY
+    }
+
+    LaunchedEffect(transformState.isTransformInProgress) {
+        if (transformState.isTransformInProgress) return@LaunchedEffect
+
+        val targetZoom = if (zoom <= 1.01f) 1f else zoom
+        val (targetX, targetY) = if (targetZoom <= 1f) {
+            0f to 0f
+        } else {
+            clampPanOffset(
+                rawOffsetX = offsetX,
+                rawOffsetY = offsetY,
+                zoom = targetZoom,
+                viewport = viewerSize
+            )
+        }
+
+        val duration = 180
+
+        if (abs(zoom - targetZoom) > 0.001f) {
+            animate(
+                initialValue = zoom,
+                targetValue = targetZoom,
+                animationSpec = tween(durationMillis = duration, easing = FastOutSlowInEasing)
+            ) { value, _ ->
+                zoom = value
+            }
+        }
+
+        if (abs(offsetX - targetX) > 0.5f) {
+            animate(
+                initialValue = offsetX,
+                targetValue = targetX,
+                animationSpec = tween(durationMillis = duration, easing = FastOutSlowInEasing)
+            ) { value, _ ->
+                offsetX = value
+            }
+        }
+
+        if (abs(offsetY - targetY) > 0.5f) {
+            animate(
+                initialValue = offsetY,
+                targetValue = targetY,
+                animationSpec = tween(durationMillis = duration, easing = FastOutSlowInEasing)
+            ) { value, _ ->
+                offsetY = value
+            }
+        }
     }
 
     val openDocumentLauncher = rememberLauncherForActivityResult(OpenDocument()) { uri: Uri? ->
@@ -881,4 +926,36 @@ private fun clampPanOffset(
     val maxY = (viewport.height * (zoom - 1f)) / 2f
 
     return rawOffsetX.coerceIn(-maxX, maxX) to rawOffsetY.coerceIn(-maxY, maxY)
+}
+
+private fun applyPanResistance(
+    rawOffsetX: Float,
+    rawOffsetY: Float,
+    zoom: Float,
+    viewport: IntSize
+): Pair<Float, Float> {
+    if (zoom <= 1f || viewport.width <= 0 || viewport.height <= 0) {
+        return 0f to 0f
+    }
+
+    val (hardX, hardY) = clampPanOffset(
+        rawOffsetX = rawOffsetX,
+        rawOffsetY = rawOffsetY,
+        zoom = zoom,
+        viewport = viewport
+    )
+
+    // Rubber-band overscroll region (15% of hard pan range) for natural feel.
+    val maxX = (viewport.width * (zoom - 1f)) / 2f
+    val maxY = (viewport.height * (zoom - 1f)) / 2f
+    val overscrollX = rawOffsetX - hardX
+    val overscrollY = rawOffsetY - hardY
+
+    val resistedX = hardX + overscrollX * 0.25f
+    val resistedY = hardY + overscrollY * 0.25f
+
+    val softLimitX = maxX * 1.15f
+    val softLimitY = maxY * 1.15f
+
+    return resistedX.coerceIn(-softLimitX, softLimitX) to resistedY.coerceIn(-softLimitY, softLimitY)
 }
