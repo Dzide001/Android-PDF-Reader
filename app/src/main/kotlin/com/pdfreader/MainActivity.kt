@@ -55,6 +55,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -105,6 +107,9 @@ import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
+import com.tom_roush.pdfbox.pdmodel.interactive.form.PDCheckBox
+import com.tom_roush.pdfbox.pdmodel.interactive.form.PDTextField
+import java.io.ByteArrayOutputStream
 import kotlin.math.abs
 import kotlin.math.hypot
 
@@ -165,6 +170,18 @@ private data class RecentDocument(
     val pageCount: Int,
     val lastOpenedAt: Long,
     val isFavorite: Boolean
+)
+
+private enum class PdfFormFieldType {
+    TEXT,
+    CHECKBOX
+}
+
+private data class PdfFormFieldEntry(
+    val name: String,
+    val type: PdfFormFieldType,
+    val textValue: String = "",
+    val checked: Boolean = false
 )
 
 private class PageBitmapCache(maxEntries: Int) {
@@ -264,6 +281,12 @@ private fun PdfReaderScreen() {
     var showPageOrganizer by remember { mutableStateOf(false) }
     var draggingOrganizerIndex by remember { mutableIntStateOf(-1) }
     var organizerDragDy by remember { mutableFloatStateOf(0f) }
+    var showFormPanel by remember { mutableStateOf(false) }
+    var isLoadingFormFields by remember { mutableStateOf(false) }
+    var isSavingFormFields by remember { mutableStateOf(false) }
+    var formFieldEntries by remember(currentPdfUri) { mutableStateOf<List<PdfFormFieldEntry>>(emptyList()) }
+    var formTextValues by remember(currentPdfUri) { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var formCheckboxValues by remember(currentPdfUri) { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
 
     val sessionPageCount = pdfSession?.renderer?.pageCount ?: 0
     val effectivePageOrder = if (pageOrder.isNotEmpty()) pageOrder else (0 until sessionPageCount).toList()
@@ -426,6 +449,7 @@ private fun PdfReaderScreen() {
             currentPdfUri = uri
             pageOrder = (0 until renderer.pageCount).toList()
             showPageOrganizer = false
+            showFormPanel = false
 
             recentDocuments = upsertRecentDocument(
                 existing = recentDocuments,
@@ -532,6 +556,7 @@ private fun PdfReaderScreen() {
                                             pdfSession = session
                                             currentPdfUri = uri
                                             errorMessage = null
+                                            showFormPanel = false
 
                                             recentDocuments = upsertRecentDocument(
                                                 existing = recentDocuments,
@@ -692,6 +717,37 @@ private fun PdfReaderScreen() {
                 onClick = { showPageOrganizer = !showPageOrganizer },
                 enabled = pdfSession != null
             ) { Text(if (showPageOrganizer) "🗂✓" else "🗂") }
+
+            Button(
+                onClick = {
+                    if (showFormPanel) {
+                        showFormPanel = false
+                        return@Button
+                    }
+
+                    val uri = currentPdfUri ?: return@Button
+                    isLoadingFormFields = true
+                    errorMessage = null
+                    scope.launch {
+                        try {
+                            val fields = extractBasicAcroFormFields(context, uri)
+                            formFieldEntries = fields
+                            formTextValues = fields
+                                .filter { it.type == PdfFormFieldType.TEXT }
+                                .associate { it.name to it.textValue }
+                            formCheckboxValues = fields
+                                .filter { it.type == PdfFormFieldType.CHECKBOX }
+                                .associate { it.name to it.checked }
+                            showFormPanel = true
+                        } catch (e: Exception) {
+                            errorMessage = e.message ?: "Failed to load form fields"
+                        } finally {
+                            isLoadingFormFields = false
+                        }
+                    }
+                },
+                enabled = pdfSession != null && !isContinuousMode && !isLoadingFormFields && !isSavingFormFields
+            ) { Text(if (showFormPanel) "📝✓" else "📝") }
 
             Button(
                 onClick = undoLastAnnotation,
@@ -1360,6 +1416,119 @@ private fun PdfReaderScreen() {
                             }
                         }
                     }
+
+                    if (showFormPanel) {
+                        Card(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(10.dp)
+                                .fillMaxWidth(0.92f)
+                                .fillMaxHeight(0.45f)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text("Form Fields", style = MaterialTheme.typography.titleMedium)
+
+                                if (isLoadingFormFields) {
+                                    Text("Loading fields…")
+                                } else if (formFieldEntries.isEmpty()) {
+                                    Text(
+                                        "No basic AcroForm fields found (text / checkbox).",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                } else {
+                                    Column(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .verticalScroll(rememberScrollState()),
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        formFieldEntries.forEach { field ->
+                                            when (field.type) {
+                                                PdfFormFieldType.TEXT -> {
+                                                    OutlinedTextField(
+                                                        value = formTextValues[field.name] ?: field.textValue,
+                                                        onValueChange = { updated ->
+                                                            formTextValues = formTextValues.toMutableMap().apply {
+                                                                put(field.name, updated)
+                                                            }
+                                                        },
+                                                        label = { Text(field.name) },
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        singleLine = true
+                                                    )
+                                                }
+
+                                                PdfFormFieldType.CHECKBOX -> {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Text(field.name)
+                                                        Checkbox(
+                                                            checked = formCheckboxValues[field.name] ?: field.checked,
+                                                            onCheckedChange = { checked ->
+                                                                formCheckboxValues = formCheckboxValues.toMutableMap().apply {
+                                                                    put(field.name, checked)
+                                                                }
+                                                            }
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = {
+                                            val uri = currentPdfUri ?: return@Button
+                                            isSavingFormFields = true
+                                            errorMessage = null
+                                            scope.launch {
+                                                try {
+                                                    applyBasicAcroFormValues(
+                                                        context = context,
+                                                        uri = uri,
+                                                        textValues = formTextValues,
+                                                        checkboxValues = formCheckboxValues
+                                                    )
+
+                                                    openDocumentFromUriString(
+                                                        context = context,
+                                                        uriString = uri.toString(),
+                                                        onOpened = { session, openedUri ->
+                                                            pdfSession?.close()
+                                                            pageCache.clear()
+                                                            currentPage = 0
+                                                            pdfSession = session
+                                                            currentPdfUri = openedUri
+                                                            pageOrder = (0 until session.renderer.pageCount).toList()
+                                                            errorMessage = null
+                                                        },
+                                                        onError = { msg -> errorMessage = msg }
+                                                    )
+                                                } catch (e: Exception) {
+                                                    errorMessage = e.message ?: "Failed to apply form values"
+                                                } finally {
+                                                    isSavingFormFields = false
+                                                }
+                                            }
+                                        },
+                                        enabled = formFieldEntries.isNotEmpty() && !isSavingFormFields
+                                    ) { Text(if (isSavingFormFields) "Applying…" else "Apply") }
+
+                                    Button(onClick = { showFormPanel = false }) { Text("Close") }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1925,6 +2094,87 @@ private suspend fun extractPageCharBoxes(
             boxes
         }
     }
+}
+
+private suspend fun extractBasicAcroFormFields(
+    context: android.content.Context,
+    uri: Uri
+): List<PdfFormFieldEntry> = withContext(Dispatchers.IO) {
+    PDFBoxResourceLoader.init(context.applicationContext)
+    context.contentResolver.openInputStream(uri)?.use { stream ->
+        PDDocument.load(stream).use { document ->
+            val acroForm = document.documentCatalog?.acroForm ?: return@withContext emptyList()
+            val result = mutableListOf<PdfFormFieldEntry>()
+
+            acroForm.fieldTree.forEach { field ->
+                val name = field.fullyQualifiedName ?: field.partialName ?: "Field"
+                when (field) {
+                    is PDTextField -> {
+                        result += PdfFormFieldEntry(
+                            name = name,
+                            type = PdfFormFieldType.TEXT,
+                            textValue = field.value ?: ""
+                        )
+                    }
+
+                    is PDCheckBox -> {
+                        result += PdfFormFieldEntry(
+                            name = name,
+                            type = PdfFormFieldType.CHECKBOX,
+                            checked = runCatching { field.isChecked }.getOrDefault(false)
+                        )
+                    }
+                }
+            }
+
+            result.sortedBy { it.name.lowercase() }
+        }
+    } ?: emptyList()
+}
+
+private suspend fun applyBasicAcroFormValues(
+    context: android.content.Context,
+    uri: Uri,
+    textValues: Map<String, String>,
+    checkboxValues: Map<String, Boolean>
+) = withContext(Dispatchers.IO) {
+    PDFBoxResourceLoader.init(context.applicationContext)
+
+    val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
+        PDDocument.load(input).use { document ->
+            val acroForm = document.documentCatalog?.acroForm
+                ?: throw IllegalStateException("No AcroForm found in PDF")
+
+            acroForm.fieldTree.forEach { field ->
+                val name = field.fullyQualifiedName ?: field.partialName ?: return@forEach
+                when (field) {
+                    is PDTextField -> {
+                        if (textValues.containsKey(name)) {
+                            field.value = textValues[name].orEmpty()
+                        }
+                    }
+
+                    is PDCheckBox -> {
+                        if (checkboxValues[name] == true) {
+                            field.check()
+                        } else if (checkboxValues.containsKey(name)) {
+                            field.unCheck()
+                        }
+                    }
+                }
+            }
+
+            ByteArrayOutputStream().use { output ->
+                document.save(output)
+                output.toByteArray()
+            }
+        }
+    } ?: throw IllegalStateException("Unable to read PDF for form update")
+
+    context.contentResolver.openOutputStream(uri, "wt")?.use { output ->
+        output.write(bytes)
+        output.flush()
+    } ?: throw IllegalStateException("Document provider does not allow writing")
 }
 
 private suspend fun openDocumentFromUriString(
