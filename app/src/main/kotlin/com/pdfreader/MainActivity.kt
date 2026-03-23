@@ -13,6 +13,7 @@ import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.util.LruCache
+import android.view.MotionEvent
 import org.json.JSONArray
 import org.json.JSONObject
 import androidx.activity.ComponentActivity
@@ -43,7 +44,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -51,6 +51,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Card
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -76,6 +77,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.pointerInteropFilter
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
@@ -206,6 +209,7 @@ private fun PdfReaderScreen() {
     var currentStrokePoints by remember { mutableStateOf<List<StrokePoint>>(emptyList()) }
     var drawingColor by remember { mutableStateOf(0xFF000000) }  // Black
     var isEraserMode by remember { mutableStateOf(false) }
+    var isStylusActive by remember { mutableStateOf(false) }
 
     val goToPreviousPage = {
         if (currentPage > 0) currentPage--
@@ -721,6 +725,7 @@ private fun PdfReaderScreen() {
         }
     }
 
+    @OptIn(ExperimentalComposeUiApi::class)
     @Composable
     fun DrawingOverlaySection(modifier: Modifier = Modifier) {
         if (!isDrawingMode) return
@@ -729,33 +734,65 @@ private fun PdfReaderScreen() {
             modifier = modifier
                 .fillMaxSize()
                 .background(ComposeColor.Transparent)
-                .pointerInput(isDrawingMode, currentPage, viewerSize, isEraserMode) {
-                    detectDragGestures(
-                        onDragStart = { offset ->
+                .pointerInteropFilter { event ->
+                    if (!isDrawingMode) return@pointerInteropFilter false
+
+                    val stylusIndex = findStylusPointerIndex(event)
+                    val activePointerIndex = when {
+                        stylusIndex != -1 -> stylusIndex
+                        isStylusActive -> -1 // Palm rejection while stylus session active
+                        else -> event.actionIndex.coerceIn(0, event.pointerCount - 1)
+                    }
+
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN,
+                        MotionEvent.ACTION_POINTER_DOWN -> {
+                            if (stylusIndex != -1) isStylusActive = true
+                            if (activePointerIndex == -1) return@pointerInteropFilter true
+
                             currentStrokePoints = listOf(
-                                StrokePoint(
-                                    x = offset.x,
-                                    y = offset.y,
-                                    pressure = 0.5f,  // Default pressure for touch
-                                    size = calculateStrokeWidth(0.5f, isEraserMode)
+                                strokePointFromMotionEvent(event, activePointerIndex, isEraserMode)
+                            )
+                        }
+
+                        MotionEvent.ACTION_MOVE -> {
+                            if (activePointerIndex == -1) return@pointerInteropFilter true
+
+                            val historySize = event.historySize
+                            for (h in 0 until historySize) {
+                                val historical = strokePointFromMotionEvent(
+                                    event = event,
+                                    pointerIndex = activePointerIndex,
+                                    isEraser = isEraserMode,
+                                    historyIndex = h
                                 )
-                            )
-                        },
-                        onDrag = { change, _ ->
-                            change.consume()
-                            val point = StrokePoint(
-                                x = change.position.x,
-                                y = change.position.y,
-                                pressure = 0.5f,  // Touch doesn't have pressure; stylus would via platform layer
-                                size = calculateStrokeWidth(0.5f, isEraserMode)
-                            )
-                            val last = currentStrokePoints.lastOrNull()
-                            val shouldAppend = last == null || pointDistance(last, point) >= 1.5f
-                            if (shouldAppend) {
-                                currentStrokePoints = (currentStrokePoints + point).takeLast(1200)
+                                appendStrokePoint(
+                                    existing = currentStrokePoints,
+                                    next = historical,
+                                    maxPoints = 1600
+                                )?.let { currentStrokePoints = it }
                             }
-                        },
-                        onDragEnd = {
+
+                            val current = strokePointFromMotionEvent(event, activePointerIndex, isEraserMode)
+                            appendStrokePoint(
+                                existing = currentStrokePoints,
+                                next = current,
+                                maxPoints = 1600
+                            )?.let { currentStrokePoints = it }
+                        }
+
+                        MotionEvent.ACTION_UP,
+                        MotionEvent.ACTION_POINTER_UP,
+                        MotionEvent.ACTION_CANCEL -> {
+                            val actionToolType = event.getToolType(event.actionIndex)
+                            if (actionToolType == MotionEvent.TOOL_TYPE_STYLUS ||
+                                actionToolType == MotionEvent.TOOL_TYPE_ERASER ||
+                                event.actionMasked == MotionEvent.ACTION_CANCEL ||
+                                event.actionMasked == MotionEvent.ACTION_UP
+                            ) {
+                                isStylusActive = false
+                            }
+
                             if (currentStrokePoints.isNotEmpty()) {
                                 val stroke = Stroke(
                                     points = currentStrokePoints,
@@ -769,11 +806,10 @@ private fun PdfReaderScreen() {
                                 }
                             }
                             currentStrokePoints = emptyList()
-                        },
-                        onDragCancel = {
-                            currentStrokePoints = emptyList()
                         }
-                    )
+                    }
+
+                    true
                 }
         ) {
             // Render completed strokes from this page
@@ -1018,7 +1054,10 @@ private fun PdfReaderScreen() {
                     if (isContinuousMode) {
                         ContinuousViewerSection(modifier = Modifier.weight(1f))
                     } else {
-                        ViewerSection(modifier = Modifier.weight(1f))
+                        Box(modifier = Modifier.weight(1f)) {
+                            ViewerSection(modifier = Modifier.fillMaxSize())
+                            DrawingOverlaySection(modifier = Modifier.fillMaxSize())
+                        }
                     }
                 }
             }
@@ -1026,33 +1065,53 @@ private fun PdfReaderScreen() {
     }
 
     if (showTextDialog) {
-        AlertDialog(
-            onDismissRequest = { showTextDialog = false },
-            title = { Text("Page Text") },
-            text = {
-                SelectionContainer {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 140.dp, max = 320.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("Page Text", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        text = selectedPageText.ifBlank {
-                            "No extractable text found on this page. This may be a scanned/image-only page."
-                        },
-                        modifier = Modifier.verticalScroll(rememberScrollState())
+                        "Long-press text to select like standard readers",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
                     )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    clipboardManager.setText(AnnotatedString(selectedPageText))
-                    showTextDialog = false
-                }) {
-                    Text("Copy")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showTextDialog = false }) {
-                    Text("Close")
+                    SelectionContainer {
+                        Text(
+                            text = selectedPageText.ifBlank {
+                                "No extractable text found on this page. This may be a scanned/image-only page."
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .verticalScroll(rememberScrollState())
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = {
+                            clipboardManager.setText(AnnotatedString(selectedPageText))
+                            showTextDialog = false
+                        }) {
+                            Text("Copy")
+                        }
+                        TextButton(onClick = { showTextDialog = false }) {
+                            Text("Close")
+                        }
+                    }
                 }
             }
-        )
+        }
     }
 }
 
@@ -1316,6 +1375,58 @@ private fun renderStrokesToBitmap(
 
 private fun pointDistance(a: StrokePoint, b: StrokePoint): Float {
     return hypot((a.x - b.x).toDouble(), (a.y - b.y).toDouble()).toFloat()
+}
+
+private fun appendStrokePoint(
+    existing: List<StrokePoint>,
+    next: StrokePoint,
+    maxPoints: Int
+): List<StrokePoint>? {
+    val last = existing.lastOrNull()
+    val threshold = if (next.pressure > 0.01f) 0.75f else 1.5f
+    val shouldAppend = last == null || pointDistance(last, next) >= threshold
+    if (!shouldAppend) return null
+    return (existing + next).takeLast(maxPoints)
+}
+
+private fun findStylusPointerIndex(event: MotionEvent): Int {
+    for (i in 0 until event.pointerCount) {
+        val toolType = event.getToolType(i)
+        if (toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER) {
+            return i
+        }
+    }
+    return -1
+}
+
+private fun strokePointFromMotionEvent(
+    event: MotionEvent,
+    pointerIndex: Int,
+    isEraser: Boolean,
+    historyIndex: Int? = null
+): StrokePoint {
+    val x = if (historyIndex == null) {
+        event.getX(pointerIndex)
+    } else {
+        event.getHistoricalX(pointerIndex, historyIndex)
+    }
+    val y = if (historyIndex == null) {
+        event.getY(pointerIndex)
+    } else {
+        event.getHistoricalY(pointerIndex, historyIndex)
+    }
+    val pressure = if (historyIndex == null) {
+        event.getPressure(pointerIndex)
+    } else {
+        event.getHistoricalPressure(pointerIndex, historyIndex)
+    }.coerceIn(0f, 1f)
+
+    return StrokePoint(
+        x = x,
+        y = y,
+        pressure = pressure,
+        size = calculateStrokeWidth(pressure, isEraser)
+    )
 }
 
 private fun buildSmoothAndroidPath(points: List<StrokePoint>): Path {

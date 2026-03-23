@@ -604,9 +604,9 @@ data class TextBox(val rect: Rect, val text: String)
 - [x] **MA.10** - Beta 1 release packaging + F-Droid submission assets
 
 ### Phase B Milestones
-- [ ] **MB.1** - Stylus detection and palm rejection
-- [ ] **MB.2** - Low-latency freehand drawing
-- [ ] **MB.3** - Pressure sensitivity support
+- [x] **MB.1** - Stylus detection and palm rejection
+- [x] **MB.2** - Low-latency freehand drawing
+- [x] **MB.3** - Pressure sensitivity support
 - [ ] **MB.4** - Shape tools (rectangles, circles, arrows)
 - [ ] **MB.5** - Eraser tool
 - [ ] **MB.6** - Dual-pane tablet layout
