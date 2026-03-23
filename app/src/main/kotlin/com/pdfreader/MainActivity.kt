@@ -20,6 +20,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
@@ -69,6 +70,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntSize
@@ -168,6 +170,14 @@ private fun PdfReaderScreen() {
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
     var lastRenderMs by remember { mutableStateOf<Long?>(null) }
+
+    val goToPreviousPage = {
+        if (currentPage > 0) currentPage--
+    }
+    val goToNextPage = {
+        val count = pdfSession?.renderer?.pageCount ?: 0
+        if (currentPage < count - 1) currentPage++
+    }
 
     val transformState = rememberTransformableState { zoomChange, panChange, _ ->
         zoom = (zoom * zoomChange).coerceIn(1f, 4f)
@@ -342,16 +352,13 @@ private fun PdfReaderScreen() {
                 Text("Open PDF")
             }
             Button(
-                onClick = { if (currentPage > 0) currentPage-- },
+                onClick = goToPreviousPage,
                 enabled = currentPage > 0 && pdfSession != null
             ) {
                 Text("Previous")
             }
             Button(
-                onClick = {
-                    val count = pdfSession?.renderer?.pageCount ?: 0
-                    if (currentPage < count - 1) currentPage++
-                },
+                onClick = goToNextPage,
                 enabled = pdfSession != null && currentPage < ((pdfSession?.renderer?.pageCount ?: 1) - 1)
             ) {
                 Text("Next")
@@ -426,6 +433,38 @@ private fun PdfReaderScreen() {
                             translationY = offsetY
                         }
                         .transformable(state = transformState, enabled = !isHighlightMode)
+                        .pointerInput(isHighlightMode, zoom) {
+                            if (isHighlightMode || zoom > 1.05f) return@pointerInput
+                            var dragDistance = 0f
+                            detectHorizontalDragGestures(
+                                onHorizontalDrag = { change, dragAmount ->
+                                    dragDistance += dragAmount
+                                    change.consume()
+                                },
+                                onDragEnd = {
+                                    when {
+                                        dragDistance <= -120f -> goToNextPage()
+                                        dragDistance >= 120f -> goToPreviousPage()
+                                    }
+                                    dragDistance = 0f
+                                },
+                                onDragCancel = {
+                                    dragDistance = 0f
+                                }
+                            )
+                        }
+                        .pointerInput(isHighlightMode, zoom) {
+                            if (isHighlightMode || zoom > 1.05f) return@pointerInput
+                            detectTapGestures { tapOffset ->
+                                val width = viewerSize.width.toFloat().coerceAtLeast(1f)
+                                val leftZone = width * 0.25f
+                                val rightZone = width * 0.75f
+                                when {
+                                    tapOffset.x <= leftZone -> goToPreviousPage()
+                                    tapOffset.x >= rightZone -> goToNextPage()
+                                }
+                            }
+                        }
                         .pointerInput(isHighlightMode, currentPage, viewerSize) {
                             if (!isHighlightMode) return@pointerInput
                             detectDragGestures(
