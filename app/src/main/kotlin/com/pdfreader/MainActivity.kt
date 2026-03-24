@@ -96,6 +96,8 @@ import androidx.compose.ui.unit.dp
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.pdfreader.workers.OcrWorker
+import com.pdfreader.core.storage.DatabaseProvider
+import com.pdfreader.core.storage.OcrSearchMatch
 import androidx.work.WorkInfo
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.layout.onSizeChanged
@@ -326,6 +328,19 @@ private fun PdfReaderScreen() {
     var isOcrProcessing by remember { mutableStateOf(false) }
     var ocrWorkStatus by remember { mutableStateOf<String?>(null) }
     var ocrWorkRequestId by remember { mutableStateOf<String?>(null) }
+    var showSearchPanel by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<OcrSearchMatch>>(emptyList()) }
+    var isSearching by remember { mutableStateOf(false) }
+    var searchStatus by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(currentPdfUri) {
+        showSearchPanel = false
+        searchQuery = ""
+        searchResults = emptyList()
+        isSearching = false
+        searchStatus = null
+    }
 
     val sessionPageCount = pdfSession?.renderer?.pageCount ?: 0
     val effectivePageOrder = if (pageOrder.isNotEmpty()) pageOrder else (0 until sessionPageCount).toList()
@@ -362,6 +377,41 @@ private fun PdfReaderScreen() {
             if (pos in 0 until effectivePageOrder.lastIndex) currentPage = effectivePageOrder[pos + 1]
         }
     }
+
+    val runOcrSearch: () -> Unit = {
+        val documentId = currentPdfUri?.lastPathSegment
+        val normalizedQuery = buildFtsMatchQuery(searchQuery)
+
+        if (documentId.isNullOrBlank()) {
+            searchStatus = "Open a document first"
+            searchResults = emptyList()
+        } else if (normalizedQuery.isBlank()) {
+            searchStatus = "Enter a search term"
+            searchResults = emptyList()
+        } else {
+            isSearching = true
+            searchStatus = "Searching…"
+
+            scope.launch {
+                try {
+                    val results = withContext(Dispatchers.IO) {
+                        DatabaseProvider
+                            .getDatabase(context)
+                            .ocrSearchDao()
+                            .searchDocument(documentId = documentId, query = normalizedQuery)
+                    }
+                    searchResults = results
+                    searchStatus = if (results.isEmpty()) "No matches" else "${results.size} result(s)"
+                } catch (e: Exception) {
+                    searchResults = emptyList()
+                    searchStatus = "Search failed: ${e.message ?: "unknown"}"
+                } finally {
+                    isSearching = false
+                }
+            }
+        }
+    }
+
     val undoLastAnnotation = {
         when {
             isDrawingMode && (strokesByPage[currentPage]?.isNotEmpty() == true) -> {
@@ -908,6 +958,16 @@ private fun PdfReaderScreen() {
                 },
                 enabled = pdfSession != null && !isContinuousMode && !isOcrProcessing
             ) { Text(if (isOcrProcessing) "🔍●" else "🔍") }
+
+            Button(
+                onClick = {
+                    showSearchPanel = !showSearchPanel
+                    if (showSearchPanel && searchQuery.isNotBlank()) {
+                        runOcrSearch()
+                    }
+                },
+                enabled = pdfSession != null
+            ) { Text(if (showSearchPanel) "🔎✓" else "🔎") }
 
 
             Button(
@@ -1866,6 +1926,86 @@ private fun PdfReaderScreen() {
                                             showSignaturePanel = false
                                         }
                                     ) { Text("Done") }
+                                }
+                            }
+                        }
+                    }
+
+                    if (showSearchPanel) {
+                        Card(
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(10.dp)
+                                .fillMaxWidth(0.92f)
+                                .heightIn(max = 360.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text("Search OCR Text", style = MaterialTheme.typography.titleMedium)
+
+                                OutlinedTextField(
+                                    value = searchQuery,
+                                    onValueChange = { searchQuery = it },
+                                    singleLine = true,
+                                    label = { Text("Query") },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = { runOcrSearch() },
+                                        enabled = !isSearching && searchQuery.isNotBlank()
+                                    ) {
+                                        Text(if (isSearching) "Searching…" else "Search")
+                                    }
+                                    Button(
+                                        onClick = {
+                                            searchQuery = ""
+                                            searchResults = emptyList()
+                                            searchStatus = null
+                                        }
+                                    ) { Text("Clear") }
+                                    Button(onClick = { showSearchPanel = false }) { Text("Close") }
+                                }
+
+                                if (!searchStatus.isNullOrBlank()) {
+                                    Text(searchStatus!!, style = MaterialTheme.typography.bodySmall)
+                                }
+
+                                if (searchResults.isNotEmpty()) {
+                                    LazyColumn(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 220.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        items(searchResults) { match ->
+                                            TextButton(
+                                                onClick = {
+                                                    currentPage = match.pageNumber
+                                                    showSearchPanel = false
+                                                },
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalAlignment = Alignment.Start
+                                                ) {
+                                                    Text("Page ${match.pageNumber + 1}")
+                                                    Text(
+                                                        match.snippet,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        maxLines = 2,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -3221,4 +3361,19 @@ private fun getRealPathFromUri(context: android.content.Context, uri: Uri): Stri
         }
         else -> null
     }
+}
+
+private fun buildFtsMatchQuery(rawQuery: String): String {
+    val terms = rawQuery
+        .trim()
+        .split(Regex("\\s+"))
+        .mapNotNull { term ->
+            term
+                .replace(Regex("[^\\p{L}\\p{N}_-]"), "")
+                .takeIf { it.isNotBlank() }
+        }
+
+    if (terms.isEmpty()) return ""
+
+    return terms.joinToString(" AND ") { "\"$it\"*" }
 }
