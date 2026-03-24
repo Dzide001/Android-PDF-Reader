@@ -11,7 +11,12 @@ class TesseractOcrEngine(
     private val context: Context,
     private val workDir: File = File(context.filesDir, "ocr")
 ) {
+    @Volatile
+    private var preparedLanguage: String? = null
+
     suspend fun initialize(language: String = "eng") = withContext(Dispatchers.IO) {
+        if (preparedLanguage == language) return@withContext
+
         val tessDataDir = File(workDir, "tessdata")
         if (!tessDataDir.exists()) tessDataDir.mkdirs()
 
@@ -31,14 +36,14 @@ class TesseractOcrEngine(
                 )
             }
         }
+
+        preparedLanguage = language
     }
 
     suspend fun recognize(
         bitmap: Bitmap,
         language: String = "eng"
     ): OcrPageResult = withContext(Dispatchers.IO) {
-        initialize(language)
-
         val baseApi = TessBaseAPI()
         try {
             val initialized = baseApi.init(workDir.absolutePath, language)

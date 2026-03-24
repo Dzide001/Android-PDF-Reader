@@ -61,4 +61,7 @@ interface OcrSearchDao {
         query: String,
         limit: Int = 50
     ): List<OcrSearchMatch>
+
+    @Query("INSERT INTO ocr_search_fts(ocr_search_fts) VALUES('optimize')")
+    suspend fun optimizeFtsIndex()
 }

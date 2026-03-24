@@ -16,7 +16,7 @@ import com.pdfreader.core.storage.OcrLayoutEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.UUID
+import kotlin.math.sqrt
 
 class OcrWorker(
     context: Context,
@@ -48,90 +48,101 @@ class OcrWorker(
                 val bitmap = renderPdfPageToBitmap(pdfPath, pageNumber)
                     ?: return@withContext Result.retry()
 
-                // Run OCR on bitmap
-                val ocrResult = ocrEngine.recognize(bitmap, language)
+                try {
+                    // Run OCR on bitmap
+                    val ocrResult = ocrEngine.recognize(bitmap, language)
 
-                // Store basic OCR result (text + confidence)
-                val resultId = "${documentId}_${pageNumber}"
-                val resultEntity = OcrResultEntity(
-                    id = resultId,
-                    documentId = documentId,
-                    pageNumber = pageNumber,
-                    extractedText = ocrResult.text,
-                    confidence = ocrResult.confidence,
-                    language = ocrResult.language,
-                    processedAt = System.currentTimeMillis(),
-                    isSearchable = ocrResult.text.isNotBlank()
-                )
+                    // Store basic OCR result (text + confidence)
+                    val resultId = "${documentId}_${pageNumber}"
+                    val resultEntity = OcrResultEntity(
+                        id = resultId,
+                        documentId = documentId,
+                        pageNumber = pageNumber,
+                        extractedText = ocrResult.text,
+                        confidence = ocrResult.confidence,
+                        language = ocrResult.language,
+                        processedAt = System.currentTimeMillis(),
+                        isSearchable = ocrResult.text.isNotBlank()
+                    )
 
-                database.ocrResultDao().insertOcrResult(resultEntity)
+                    database.ocrResultDao().insertOcrResult(resultEntity)
 
-                // Index OCR text for full-text search (FTS5)
-                if (ocrResult.text.isNotBlank()) {
-                    try {
-                        database.ocrSearchDao().deletePageIndex(documentId, pageNumber)
-                        database.ocrSearchDao().insertPageIndex(
-                            documentId = documentId,
-                            pageNumber = pageNumber,
-                            extractedText = ocrResult.text,
-                            language = ocrResult.language,
-                            source = "ocr",
-                            updatedAt = resultEntity.processedAt
-                        )
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                        // Continue even if search indexing fails
-                    }
-                }
-
-                // Parse hOCR for layout information if available
-                if (!ocrResult.hocrXml.isNullOrEmpty()) {
-                    try {
-                        val hocrParser = HocrParser()
-                            val pageLayout = hocrParser.parse(
-                                ocrResult.hocrXml!!,
-                            pageWidth = bitmap.width.toFloat(),
-                            pageHeight = bitmap.height.toFloat(),
-                            pageNumber = pageNumber,
-                            documentId = documentId,
-                            language = language
-                        )
-                        
-                        if (pageLayout != null) {
-                            val layoutJson = OcrLayoutSerializer.toJson(pageLayout)
-                            val layoutEntity = OcrLayoutEntity(
-                                id = resultId,
+                    // Index OCR text for full-text search (FTS5)
+                    if (ocrResult.text.isNotBlank()) {
+                        try {
+                            database.ocrSearchDao().deletePageIndex(documentId, pageNumber)
+                            database.ocrSearchDao().insertPageIndex(
                                 documentId = documentId,
                                 pageNumber = pageNumber,
+                                extractedText = ocrResult.text,
+                                language = ocrResult.language,
+                                source = "ocr",
+                                updatedAt = resultEntity.processedAt
+                            )
+
+                            // Optimize FTS segments periodically for large documents
+                            if ((pageNumber + 1) % FTS_OPTIMIZE_INTERVAL == 0) {
+                                database.ocrSearchDao().optimizeFtsIndex()
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                            // Continue even if search indexing fails
+                        }
+                    }
+
+                    // Parse hOCR for layout information if available
+                    if (!ocrResult.hocrXml.isNullOrEmpty()) {
+                        try {
+                            val hocrParser = HocrParser()
+                            val pageLayout = hocrParser.parse(
+                                ocrResult.hocrXml!!,
                                 pageWidth = bitmap.width.toFloat(),
                                 pageHeight = bitmap.height.toFloat(),
-                                layoutJson = layoutJson,
-                                language = language,
-                                    engineVersion = ocrResult.hocrXml?.let { 
-                                    if (it.contains("ocr-version")) "hocr-1.2" else null
-                                },
-                                processingTime = System.currentTimeMillis() - resultEntity.processedAt
+                                pageNumber = pageNumber,
+                                documentId = documentId,
+                                language = language
                             )
-                            database.ocrLayoutDao().insertLayout(layoutEntity)
+
+                            if (pageLayout != null) {
+                                val layoutJson = OcrLayoutSerializer.toJson(pageLayout)
+                                val layoutEntity = OcrLayoutEntity(
+                                    id = resultId,
+                                    documentId = documentId,
+                                    pageNumber = pageNumber,
+                                    pageWidth = bitmap.width.toFloat(),
+                                    pageHeight = bitmap.height.toFloat(),
+                                    layoutJson = layoutJson,
+                                    language = language,
+                                    engineVersion = ocrResult.hocrXml?.let {
+                                        if (it.contains("ocr-version")) "hocr-1.2" else null
+                                    },
+                                    processingTime = System.currentTimeMillis() - resultEntity.processedAt
+                                )
+                                database.ocrLayoutDao().insertLayout(layoutEntity)
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                            // Continue even if layout parsing fails
                         }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                        // Continue even if layout parsing fails
+                    }
+
+                    // Report progress
+                    setProgress(workDataOf(
+                        "page" to pageNumber,
+                        "status" to "completed",
+                        "text_length" to ocrResult.text.length
+                    ))
+
+                    Result.success(workDataOf(
+                        "page" to pageNumber,
+                        "status" to "completed",
+                        "confidence" to ocrResult.confidence
+                    ))
+                } finally {
+                    if (!bitmap.isRecycled) {
+                        bitmap.recycle()
                     }
                 }
-
-                // Report progress
-                setProgress(workDataOf(
-                    "page" to pageNumber,
-                    "status" to "completed",
-                    "text_length" to ocrResult.text.length
-                ))
-
-                Result.success(workDataOf(
-                    "page" to pageNumber,
-                    "status" to "completed",
-                    "confidence" to ocrResult.confidence
-                ))
 
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -157,21 +168,33 @@ class OcrWorker(
 
             if (pageNumber >= renderer.pageCount) {
                 renderer.close()
+                fd.close()
                 return null
             }
 
             val page = renderer.openPage(pageNumber)
 
-            // Render at DPI suitable for OCR (typically 150-300 DPI)
-            val scale = 2.0f
-            val width = (page.width * scale).toInt()
-            val height = (page.height * scale).toInt()
+            // Adaptive render scale to control memory for large pages while keeping OCR quality.
+            val baseScale = DEFAULT_RENDER_SCALE
+            val rawWidth = page.width * baseScale
+            val rawHeight = page.height * baseScale
+            val rawPixels = rawWidth * rawHeight
+            val scaleFactor = if (rawPixels > MAX_RENDER_PIXELS) {
+                sqrt(MAX_RENDER_PIXELS / rawPixels)
+            } else {
+                1.0f
+            }
 
-            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val renderScale = (baseScale * scaleFactor).coerceIn(MIN_RENDER_SCALE, baseScale)
+            val width = (page.width * renderScale).toInt().coerceAtLeast(1)
+            val height = (page.height * renderScale).toInt().coerceAtLeast(1)
+
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
 
             page.close()
             renderer.close()
+            fd.close()
 
             bitmap
         } catch (e: Exception) {
@@ -187,6 +210,10 @@ class OcrWorker(
         const val KEY_LANGUAGE = "language"
         const val UNIQUE_WORK_NAME = "ocr_worker"
         const val MAX_RETRIES = 3
+        const val DEFAULT_RENDER_SCALE = 2.0f
+        const val MIN_RENDER_SCALE = 1.25f
+        const val MAX_RENDER_PIXELS = 3_500_000f
+        const val FTS_OPTIMIZE_INTERVAL = 25
 
         fun createInputData(
             documentId: String,

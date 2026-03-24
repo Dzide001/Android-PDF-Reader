@@ -408,7 +408,7 @@ private fun PdfReaderScreen() {
                         DatabaseProvider
                             .getDatabase(context)
                             .ocrSearchDao()
-                            .searchDocument(documentId = documentId, query = normalizedQuery)
+                            .searchDocument(documentId = documentId, query = normalizedQuery, limit = 20)
                     }
                     searchResults = results
                     searchStatus = if (results.isEmpty()) "No matches" else "${results.size} result(s)"
