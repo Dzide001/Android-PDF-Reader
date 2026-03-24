@@ -113,6 +113,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.pdmodel.PDPage
+import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
+import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
+import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
 import com.tom_roush.pdfbox.pdmodel.interactive.form.PDCheckBox
@@ -332,6 +336,8 @@ private fun PdfReaderScreen() {
     var ocrWorkRequestId by remember { mutableStateOf<String?>(null) }
     var pendingOcrExportText by remember { mutableStateOf<String?>(null) }
     var pendingOcrExportFileName by remember { mutableStateOf("ocr_export.txt") }
+    var pendingOcrExportPdf by remember { mutableStateOf<ByteArray?>(null) }
+    var pendingOcrPdfFileName by remember { mutableStateOf("ocr_export.pdf") }
     var showSearchPanel by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var searchResults by remember { mutableStateOf<List<OcrSearchMatch>>(emptyList()) }
@@ -575,6 +581,26 @@ private fun PdfReaderScreen() {
             errorMessage = e.message ?: "Failed to export OCR text"
         } finally {
             pendingOcrExportText = null
+        }
+    }
+
+    val exportPdfLauncher = rememberLauncherForActivityResult(CreateDocument("application/pdf")) { uri: Uri? ->
+        val exportPdf = pendingOcrExportPdf
+        if (uri == null || exportPdf == null || exportPdf.isEmpty()) {
+            pendingOcrExportPdf = null
+            return@rememberLauncherForActivityResult
+        }
+
+        try {
+            context.contentResolver.openOutputStream(uri, "w")?.use { output ->
+                output.write(exportPdf)
+            } ?: run {
+                errorMessage = "Failed to create PDF export file"
+            }
+        } catch (e: Exception) {
+            errorMessage = e.message ?: "Failed to export searchable PDF"
+        } finally {
+            pendingOcrExportPdf = null
         }
     }
 
@@ -1033,6 +1059,50 @@ private fun PdfReaderScreen() {
                 },
                 enabled = pdfSession != null
             ) { Text("TXT") }
+
+            Button(
+                onClick = {
+                    val activeUri = currentPdfUri ?: run {
+                        errorMessage = "Open a document first"
+                        return@Button
+                    }
+                    val documentId = activeUri.lastPathSegment
+                    if (documentId.isNullOrBlank()) {
+                        errorMessage = "Open a document first"
+                        return@Button
+                    }
+
+                    scope.launch {
+                        try {
+                            val ocrPages = withContext(Dispatchers.IO) {
+                                DatabaseProvider
+                                    .getDatabase(context)
+                                    .ocrResultDao()
+                                    .getOcrResultsByDocumentOnce(documentId)
+                            }
+
+                            if (ocrPages.isEmpty()) {
+                                errorMessage = "No OCR text found. Run OCR first."
+                                return@launch
+                            }
+
+                            val exportPdf = withContext(Dispatchers.IO) {
+                                buildSearchableOcrPdf(context, ocrPages)
+                            }
+                            val baseName = resolveDisplayName(context, activeUri)
+                                .substringBeforeLast('.')
+                                .ifBlank { "ocr_export" }
+
+                            pendingOcrExportPdf = exportPdf
+                            pendingOcrPdfFileName = "${baseName}_ocr_searchable.pdf"
+                            exportPdfLauncher.launch(pendingOcrPdfFileName)
+                        } catch (e: Exception) {
+                            errorMessage = e.message ?: "Failed to prepare searchable PDF export"
+                        }
+                    }
+                },
+                enabled = pdfSession != null
+            ) { Text("PDF") }
 
 
             Button(
@@ -3459,4 +3529,90 @@ private fun buildOcrPlainTextExport(results: List<OcrResultEntity>): String {
     }
 
     return content.toString().trimEnd()
+}
+
+private fun buildSearchableOcrPdf(
+    context: android.content.Context,
+    results: List<OcrResultEntity>
+): ByteArray {
+    PDFBoxResourceLoader.init(context.applicationContext)
+
+    val safeResults = results.sortedBy { it.pageNumber }
+    val output = ByteArrayOutputStream()
+
+    PDDocument().use { document ->
+        safeResults.forEach { result ->
+            val page = PDPage(PDRectangle.LETTER)
+            document.addPage(page)
+
+            PDPageContentStream(document, page).use { contentStream ->
+                contentStream.beginText()
+                contentStream.setFont(PDType1Font.HELVETICA, 10f)
+                contentStream.newLineAtOffset(42f, page.mediaBox.height - 48f)
+
+                val header = "Page ${result.pageNumber + 1}"
+                contentStream.showText(header)
+                contentStream.newLineAtOffset(0f, -18f)
+
+                val lines = result.extractedText
+                    .replace("\r\n", "\n")
+                    .replace('\r', '\n')
+                    .split('\n')
+                    .flatMap { wrapPdfTextLine(it, maxChars = 95) }
+
+                val maxLinesPerPage = 44
+                lines.take(maxLinesPerPage).forEach { line ->
+                    val sanitized = sanitizePdfText(line)
+                    if (sanitized.isNotBlank()) {
+                        contentStream.showText(sanitized)
+                    }
+                    contentStream.newLineAtOffset(0f, -14f)
+                }
+
+                contentStream.endText()
+            }
+        }
+
+        document.save(output)
+    }
+
+    return output.toByteArray()
+}
+
+private fun sanitizePdfText(input: String): String {
+    return input
+        .replace(Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]"), " ")
+        .trim()
+}
+
+private fun wrapPdfTextLine(line: String, maxChars: Int): List<String> {
+    if (line.length <= maxChars) return listOf(line)
+
+    val words = line.split(Regex("\\s+"))
+    if (words.isEmpty()) return listOf(line.take(maxChars))
+
+    val wrapped = mutableListOf<String>()
+    var current = StringBuilder()
+
+    words.forEach { word ->
+        if (word.isBlank()) return@forEach
+
+        if (current.isEmpty()) {
+            current.append(word)
+            return@forEach
+        }
+
+        if (current.length + 1 + word.length <= maxChars) {
+            current.append(' ').append(word)
+        } else {
+            wrapped.add(current.toString())
+            current = StringBuilder(word)
+        }
+    }
+
+    if (current.isNotEmpty()) {
+        wrapped.add(current.toString())
+    }
+
+    return wrapped
 }
