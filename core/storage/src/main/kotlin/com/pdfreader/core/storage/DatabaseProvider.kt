@@ -60,6 +60,26 @@ object DatabaseProvider {
         }
     }
 
+    // Migration from v3 to v4 - add FTS5 table for OCR full-text search
+    private val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS `ocr_search_fts`
+                USING fts5(
+                    `documentId` UNINDEXED,
+                    `pageNumber` UNINDEXED,
+                    `extractedText`,
+                    `language` UNINDEXED,
+                    `source` UNINDEXED,
+                    `updatedAt` UNINDEXED,
+                    tokenize='unicode61'
+                )
+                """.trimIndent()
+            )
+        }
+    }
+
     fun getDatabase(context: Context): AppDatabase {
         return instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
@@ -67,7 +87,7 @@ object DatabaseProvider {
                 AppDatabase::class.java,
                 "pdf_reader.db"
             )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build().also { db ->
                     instance = db
                 }

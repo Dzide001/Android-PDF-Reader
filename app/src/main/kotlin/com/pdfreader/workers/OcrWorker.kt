@@ -61,10 +61,28 @@ class OcrWorker(
                     confidence = ocrResult.confidence,
                     language = ocrResult.language,
                     processedAt = System.currentTimeMillis(),
-                    isSearchable = false
+                    isSearchable = ocrResult.text.isNotBlank()
                 )
 
                 database.ocrResultDao().insertOcrResult(resultEntity)
+
+                // Index OCR text for full-text search (FTS5)
+                if (ocrResult.text.isNotBlank()) {
+                    try {
+                        database.ocrSearchDao().deletePageIndex(documentId, pageNumber)
+                        database.ocrSearchDao().insertPageIndex(
+                            documentId = documentId,
+                            pageNumber = pageNumber,
+                            extractedText = ocrResult.text,
+                            language = ocrResult.language,
+                            source = "ocr",
+                            updatedAt = resultEntity.processedAt
+                        )
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        // Continue even if search indexing fails
+                    }
+                }
 
                 // Parse hOCR for layout information if available
                 if (!ocrResult.hocrXml.isNullOrEmpty()) {
