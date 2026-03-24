@@ -18,6 +18,9 @@ interface OcrResultDao {
     @Query("SELECT * FROM ocr_results WHERE documentId = :documentId ORDER BY pageNumber")
     fun getOcrResultsByDocument(documentId: String): Flow<List<OcrResultEntity>>
 
+    @Query("SELECT * FROM ocr_results WHERE documentId = :documentId ORDER BY pageNumber")
+    suspend fun getOcrResultsByDocumentOnce(documentId: String): List<OcrResultEntity>
+
     @Query("SELECT * FROM ocr_results WHERE documentId = :documentId AND pageNumber = :pageNumber")
     fun observeOcrResult(documentId: String, pageNumber: Int): Flow<OcrResultEntity?>
 

@@ -19,6 +19,7 @@ import org.json.JSONObject
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts.CreateDocument
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.Canvas
@@ -98,6 +99,7 @@ import androidx.work.WorkManager
 import com.pdfreader.workers.OcrWorker
 import com.pdfreader.core.storage.DatabaseProvider
 import com.pdfreader.core.storage.OcrSearchMatch
+import com.pdfreader.core.storage.OcrResultEntity
 import androidx.work.WorkInfo
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.layout.onSizeChanged
@@ -328,6 +330,8 @@ private fun PdfReaderScreen() {
     var isOcrProcessing by remember { mutableStateOf(false) }
     var ocrWorkStatus by remember { mutableStateOf<String?>(null) }
     var ocrWorkRequestId by remember { mutableStateOf<String?>(null) }
+    var pendingOcrExportText by remember { mutableStateOf<String?>(null) }
+    var pendingOcrExportFileName by remember { mutableStateOf("ocr_export.txt") }
     var showSearchPanel by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var searchResults by remember { mutableStateOf<List<OcrSearchMatch>>(emptyList()) }
@@ -551,6 +555,26 @@ private fun PdfReaderScreen() {
             saveRecentDocuments(context, recentDocuments)
         } catch (e: Exception) {
             errorMessage = e.message ?: "Failed to open PDF"
+        }
+    }
+
+    val exportTextLauncher = rememberLauncherForActivityResult(CreateDocument("text/plain")) { uri: Uri? ->
+        val exportText = pendingOcrExportText
+        if (uri == null || exportText.isNullOrBlank()) {
+            pendingOcrExportText = null
+            return@rememberLauncherForActivityResult
+        }
+
+        try {
+            context.contentResolver.openOutputStream(uri, "w")?.use { output ->
+                output.write(exportText.toByteArray(Charsets.UTF_8))
+            } ?: run {
+                errorMessage = "Failed to create export file"
+            }
+        } catch (e: Exception) {
+            errorMessage = e.message ?: "Failed to export OCR text"
+        } finally {
+            pendingOcrExportText = null
         }
     }
 
@@ -968,6 +992,47 @@ private fun PdfReaderScreen() {
                 },
                 enabled = pdfSession != null
             ) { Text(if (showSearchPanel) "🔎✓" else "🔎") }
+
+            Button(
+                onClick = {
+                    val activeUri = currentPdfUri ?: run {
+                        errorMessage = "Open a document first"
+                        return@Button
+                    }
+                    val documentId = activeUri.lastPathSegment
+                    if (documentId.isNullOrBlank()) {
+                        errorMessage = "Open a document first"
+                        return@Button
+                    }
+
+                    scope.launch {
+                        try {
+                            val ocrPages = withContext(Dispatchers.IO) {
+                                DatabaseProvider
+                                    .getDatabase(context)
+                                    .ocrResultDao()
+                                    .getOcrResultsByDocumentOnce(documentId)
+                            }
+
+                            if (ocrPages.isEmpty()) {
+                                errorMessage = "No OCR text found. Run OCR first."
+                                return@launch
+                            }
+
+                            val exportText = buildOcrPlainTextExport(ocrPages)
+                            val baseName = resolveDisplayName(context, activeUri)
+                                .substringBeforeLast('.')
+                                .ifBlank { "ocr_export" }
+                            pendingOcrExportText = exportText
+                            pendingOcrExportFileName = "${baseName}_ocr.txt"
+                            exportTextLauncher.launch(pendingOcrExportFileName)
+                        } catch (e: Exception) {
+                            errorMessage = e.message ?: "Failed to prepare OCR export"
+                        }
+                    }
+                },
+                enabled = pdfSession != null
+            ) { Text("TXT") }
 
 
             Button(
@@ -3376,4 +3441,22 @@ private fun buildFtsMatchQuery(rawQuery: String): String {
     if (terms.isEmpty()) return ""
 
     return terms.joinToString(" AND ") { "\"$it\"*" }
+}
+
+private fun buildOcrPlainTextExport(results: List<OcrResultEntity>): String {
+    if (results.isEmpty()) return ""
+
+    val content = StringBuilder()
+    content.appendLine("OCR Export")
+    content.appendLine("Generated: ${java.time.Instant.now()}")
+    content.appendLine("Pages: ${results.size}")
+    content.appendLine()
+
+    results.sortedBy { it.pageNumber }.forEach { page ->
+        content.appendLine("--- Page ${page.pageNumber + 1} ---")
+        content.appendLine(page.extractedText)
+        content.appendLine()
+    }
+
+    return content.toString().trimEnd()
 }
