@@ -33,6 +33,33 @@ object DatabaseProvider {
         }
     }
 
+    // Migration from v2 to v3 - add ocr_layouts table
+    private val MIGRATION_2_3 = object : Migration(2, 3) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `ocr_layouts` (
+                    `id` TEXT NOT NULL PRIMARY KEY,
+                    `documentId` TEXT NOT NULL,
+                    `pageNumber` INTEGER NOT NULL,
+                    `pageWidth` REAL NOT NULL,
+                    `pageHeight` REAL NOT NULL,
+                    `layoutJson` TEXT NOT NULL,
+                    `language` TEXT NOT NULL,
+                    `ocrEngine` TEXT NOT NULL DEFAULT 'tesseract',
+                    `engineVersion` TEXT,
+                    `processingTime` INTEGER,
+                    `storedAt` INTEGER NOT NULL,
+                    FOREIGN KEY(`documentId`) REFERENCES `documents`(`id`) ON DELETE CASCADE
+                )
+                """.trimIndent()
+            )
+            database.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_ocr_layouts_documentId` ON `ocr_layouts` (`documentId`)"
+            )
+        }
+    }
+
     fun getDatabase(context: Context): AppDatabase {
         return instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
@@ -40,11 +67,10 @@ object DatabaseProvider {
                 AppDatabase::class.java,
                 "pdf_reader.db"
             )
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build().also { db ->
                     instance = db
                 }
         }
     }
 }
-

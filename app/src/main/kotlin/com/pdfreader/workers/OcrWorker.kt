@@ -8,8 +8,11 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.pdfreader.core.ocr.TesseractOcrEngine
+import com.pdfreader.core.ocr.HocrParser
+import com.pdfreader.core.ocr.OcrLayoutSerializer
 import com.pdfreader.core.storage.DatabaseProvider
 import com.pdfreader.core.storage.OcrResultEntity
+import com.pdfreader.core.storage.OcrLayoutEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -48,9 +51,9 @@ class OcrWorker(
                 // Run OCR on bitmap
                 val ocrResult = ocrEngine.recognize(bitmap, language)
 
-                // Store result in database
+                // Store basic OCR result (text + confidence)
                 val resultId = "${documentId}_${pageNumber}"
-                val entity = OcrResultEntity(
+                val resultEntity = OcrResultEntity(
                     id = resultId,
                     documentId = documentId,
                     pageNumber = pageNumber,
@@ -61,7 +64,43 @@ class OcrWorker(
                     isSearchable = false
                 )
 
-                database.ocrResultDao().insertOcrResult(entity)
+                database.ocrResultDao().insertOcrResult(resultEntity)
+
+                // Parse hOCR for layout information if available
+                if (!ocrResult.hocrXml.isNullOrEmpty()) {
+                    try {
+                        val hocrParser = HocrParser()
+                            val pageLayout = hocrParser.parse(
+                                ocrResult.hocrXml!!,
+                            pageWidth = bitmap.width.toFloat(),
+                            pageHeight = bitmap.height.toFloat(),
+                            pageNumber = pageNumber,
+                            documentId = documentId,
+                            language = language
+                        )
+                        
+                        if (pageLayout != null) {
+                            val layoutJson = OcrLayoutSerializer.toJson(pageLayout)
+                            val layoutEntity = OcrLayoutEntity(
+                                id = resultId,
+                                documentId = documentId,
+                                pageNumber = pageNumber,
+                                pageWidth = bitmap.width.toFloat(),
+                                pageHeight = bitmap.height.toFloat(),
+                                layoutJson = layoutJson,
+                                language = language,
+                                    engineVersion = ocrResult.hocrXml?.let { 
+                                    if (it.contains("ocr-version")) "hocr-1.2" else null
+                                },
+                                processingTime = System.currentTimeMillis() - resultEntity.processedAt
+                            )
+                            database.ocrLayoutDao().insertLayout(layoutEntity)
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        // Continue even if layout parsing fails
+                    }
+                }
 
                 // Report progress
                 setProgress(workDataOf(

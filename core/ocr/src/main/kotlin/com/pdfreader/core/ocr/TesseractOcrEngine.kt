@@ -49,11 +49,15 @@ class TesseractOcrEngine(
             baseApi.setImage(bitmap)
             val text = baseApi.utF8Text.orEmpty()
             val confidence = baseApi.meanConfidence().coerceIn(0, 100)
+            
+            // Get hOCR output for layout information
+            val hocrOutput = baseApi.getHOCRText(0)
 
             OcrPageResult(
                 text = text.trim(),
                 confidence = confidence,
-                language = language
+                language = language,
+                hocrXml = hocrOutput
             )
         } finally {
             baseApi.end()
@@ -64,5 +68,6 @@ class TesseractOcrEngine(
 data class OcrPageResult(
     val text: String,
     val confidence: Int,
-    val language: String
+    val language: String,
+    val hocrXml: String? = null
 )
