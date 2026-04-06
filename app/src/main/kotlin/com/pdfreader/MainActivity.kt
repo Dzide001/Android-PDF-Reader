@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
@@ -80,6 +81,7 @@ import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.input.pointer.pointerInput
@@ -527,6 +529,8 @@ private fun PdfReaderScreen() {
 
         try {
             pdfSession?.close()
+            pageBitmap = null
+            lastRenderMs = null
             pageCache.clear()
             currentPage = 0
 
@@ -692,6 +696,8 @@ private fun PdfReaderScreen() {
                                         uriString = doc.uri,
                                         onOpened = { session, uri ->
                                             pdfSession?.close()
+                                            pageBitmap = null
+                                            lastRenderMs = null
                                             pageCache.clear()
                                             currentPage = 0
                                             pdfSession = session
@@ -742,6 +748,24 @@ private fun PdfReaderScreen() {
             0xFF43A047,
             0xFF8E24AA
         )
+
+        @Composable
+        fun Button(
+            onClick: () -> Unit,
+            modifier: Modifier = Modifier,
+            enabled: Boolean = true,
+            colors: androidx.compose.material3.ButtonColors = ButtonDefaults.buttonColors(),
+            content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit
+        ) {
+            androidx.compose.material3.Button(
+                onClick = onClick,
+                modifier = modifier.defaultMinSize(minWidth = 32.dp, minHeight = 32.dp),
+                enabled = enabled,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                colors = colors,
+                content = content
+            )
+        }
 
         @Composable
         fun ButtonsContent() {
@@ -1007,7 +1031,7 @@ private fun PdfReaderScreen() {
                     }
                 },
                 enabled = pdfSession != null && !isContinuousMode && !isOcrProcessing
-            ) { Text(if (isOcrProcessing) "🔍●" else "🔍") }
+            ) { Text(if (isOcrProcessing) "OCR●" else "OCR") }
 
             Button(
                 onClick = {
@@ -1017,7 +1041,7 @@ private fun PdfReaderScreen() {
                     }
                 },
                 enabled = pdfSession != null
-            ) { Text(if (showSearchPanel) "🔎✓" else "🔎") }
+            ) { Text(if (showSearchPanel) "Search✓" else "Search") }
 
             Button(
                 onClick = {
@@ -2362,7 +2386,17 @@ private fun PdfReaderScreen() {
             state = listState,
             modifier = modifier
                 .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .graphicsLayer {
+                    scaleX = zoom
+                    scaleY = zoom
+                    transformOrigin = TransformOrigin(0f, 0f)
+                }
+                .transformable(
+                    state = transformState,
+                    enabled = !isHighlightMode && !isShapeMode && !isTextSelectionMode &&
+                        (!isDrawingMode || isPalmRejectionEnabled)
+                ),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(orderedPages) { pageIndex ->

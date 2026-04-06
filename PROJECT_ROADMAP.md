@@ -2,7 +2,7 @@
 **Architectural Blueprint & Execution Roadmap**
 
 **Project Status:** Planning → Development  
-**Last Updated:** March 21, 2026  
+**Last Updated:** April 6, 2026  
 **License:** AGPL v3
 
 ---
@@ -618,13 +618,13 @@ data class TextBox(val rect: Rect, val text: String)
 
 ### Phase C Milestones
 - [x] **MC.1** - Tesseract integration and build
-- [ ] **MC.2** - Background OCR with WorkManager
-- [ ] **MC.3** - hOCR parsing and layout reconstruction
-- [ ] **MC.4** - Full-text search indexing (FTS5)
-- [ ] **MC.5** - Search UI with snippet preview
-- [ ] **MC.6** - OCR text export (plain text)
-- [ ] **MC.7** - OCR text export (searchable PDF)
-- [ ] **MC.8** - Performance optimization for large PDFs
+- [x] **MC.2** - Background OCR with WorkManager
+- [x] **MC.3** - hOCR parsing and layout reconstruction
+- [x] **MC.4** - Full-text search indexing (FTS5)
+- [x] **MC.5** - Search UI with snippet preview
+- [x] **MC.6** - OCR text export (plain text)
+- [x] **MC.7** - OCR text export (searchable PDF)
+- [x] **MC.8** - Performance optimization for large PDFs
 - [ ] **MC.9** - Beta 3 release
 
 ### Phase D Milestones (Optional)

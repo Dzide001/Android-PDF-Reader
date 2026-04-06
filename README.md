@@ -2,7 +2,7 @@
 
 A high-performance, open-source PDF reader and editor for Android phones and tablets, built with Kotlin and Jetpack Compose.
 
-**License:** AGPL v3 | **Status:** Beta 2 (Phase B complete)
+**License:** AGPL v3 | **Status:** Beta 3 release prep (Phase C complete)
 
 ---
 
@@ -29,12 +29,14 @@ A high-performance, open-source PDF reader and editor for Android phones and tab
 - Form filling support
 - Digital signatures
 
-### 🔮 Phase C - OCR & Search (Planned)
+### ✅ Phase C - OCR & Search (Complete)
+
 - Offline OCR with Tesseract
 - Full-text search with FTS5
 - OCR text export
 
 ### 🚀 Phase D - AI & Cloud (Optional)
+
 - On-device AI (llama.cpp)
 - Cloud sync (WebDAV, Google Drive, Dropbox)
 - PDF conversion utilities
