@@ -2387,9 +2387,21 @@ private fun PdfReaderScreen() {
             modifier = modifier
                 .fillMaxWidth()
                 .background(MaterialTheme.colorScheme.surfaceVariant)
+                .onSizeChanged {
+                    viewerSize = it
+                    val (clampedX, clampedY) = clampPanOffset(
+                        rawOffsetX = offsetX,
+                        rawOffsetY = offsetY,
+                        zoom = zoom,
+                        viewport = viewerSize
+                    )
+                    offsetX = clampedX
+                    offsetY = clampedY
+                }
                 .graphicsLayer {
                     scaleX = zoom
                     scaleY = zoom
+                    translationX = offsetX
                     transformOrigin = TransformOrigin(0f, 0f)
                 }
                 .transformable(

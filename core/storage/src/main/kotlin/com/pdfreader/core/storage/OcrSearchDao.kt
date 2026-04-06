@@ -2,9 +2,11 @@ package com.pdfreader.core.storage
 
 import androidx.room.Dao
 import androidx.room.Query
+import androidx.room.SkipQueryVerification
 import kotlinx.coroutines.flow.Flow
 
 @Dao
+@SkipQueryVerification
 interface OcrSearchDao {
     @Query("DELETE FROM ocr_search_fts WHERE documentId = :documentId AND pageNumber = :pageNumber AND source = :source")
     suspend fun deletePageIndex(documentId: String, pageNumber: Int, source: String = "ocr")

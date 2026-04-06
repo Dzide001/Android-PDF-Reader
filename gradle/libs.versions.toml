@@ -2,6 +2,7 @@
 # Build tools
 android-gradle-plugin = "8.2.0"
 kotlin = "1.9.22"
+ksp = "1.9.22-1.0.17"
 kotlin-coroutines = "1.7.3"
 
 # Android API levels
@@ -67,5 +68,6 @@ tess-two = { module = "com.rmtheis:tess-two", version.ref = "tess-two" }
 android-application = { id = "com.android.application", version.ref = "android-gradle-plugin" }
 android-library = { id = "com.android.library", version.ref = "android-gradle-plugin" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-kapt = { id = "org.jetbrains.kotlin.kapt", version.ref = "kotlin" }

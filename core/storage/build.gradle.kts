@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.ksp)
 }
 
 android {
@@ -19,11 +20,10 @@ android {
     kotlinOptions {
         jvmTarget = "11"
     }
+}
 
-    tasks.withType<JavaCompile> {
-        sourceCompatibility = JavaVersion.VERSION_11.toString()
-        targetCompatibility = JavaVersion.VERSION_11.toString()
-    }
+tasks.withType<JavaCompile>().configureEach {
+    enabled = false
 }
 
 dependencies {
@@ -31,4 +31,5 @@ dependencies {
     implementation(libs.kotlin.coroutines)
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
 }
